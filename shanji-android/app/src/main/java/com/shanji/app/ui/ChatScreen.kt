@@ -72,6 +72,42 @@ private data class ChatItem(
     val text: String
 )
 
+/**
+ * 伪造打字机的切段器：按句子边界把回复切成"蹦字单位"。
+ * 句末标点（。！？；…!?; 及换行，含其后的右引号右括号）后切一段；
+ * 超过 40 字没有标点强制切一段兜底。返回各段末字符位置（exclusive）。
+ */
+private fun segmentEnds(s: String): IntArray {
+    if (s.isEmpty()) return IntArray(0)
+    val ends = ArrayList<Int>()
+    val terminal = "。！？；…!?;\n"
+    val tail = "」』\"'）)]"
+    var i = 0
+    var last = 0
+    while (i < s.length) {
+        val c = s[i]
+        var cut = -1
+        if (c in terminal) {
+            var j = i + 1
+            while (j < s.length && s[j] in tail) j++
+            cut = j
+        } else if (c == '.' && (i + 1 >= s.length || s[i + 1] == ' ' || s[i + 1] == '\n')) {
+            // 英文句点仅在句尾位置切（避免 3.14 这类小数）
+            var j = i + 1
+            while (j < s.length && s[j] in tail) j++
+            cut = j
+        }
+        if (cut > 0) {
+            ends.add(cut); last = cut; i = cut; continue
+        }
+        if (i + 1 - last >= 40) {
+            ends.add(i + 1); last = i + 1
+        }
+        i++
+    }
+    return ends.toIntArray()
+}
+
 /** DeepSeek 偶发把换行转成字面 &#10;（可能跨 chunk），显示/入库前统一还原 */
 private fun cleanText(s: String): String =
     s.replace("&#10;", "\n").replace("&amp;", "&")
@@ -103,6 +139,9 @@ fun ChatScreen(
             .getString("ai_persona", null)
     }
     val listState = rememberLazyListState()
+    // 伪造打字机状态：bubbleId → 已蹦出的段数。
+    // 放在页面级（而非气泡内 remember），滚动/重组导致 item 重建也不丢进度。
+    val typedSegs = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>() }
     // 流式回调在 IO 线程，统一 post 回主线程改 Compose 状态
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
 
@@ -251,6 +290,7 @@ fun ChatScreen(
                             acc += d
                             val idx = items.indexOfFirst { it.id == bubbleId }
                             if (idx >= 0) items[idx] = items[idx].copy(text = cleanText(acc))
+                            else android.util.Log.w("SHANJI", "delta 但气泡不存在 idx=-1 acc=${acc.length}")
                         }
                     },
                     onAct = { act -> mainHandler.post { actJson = act } }
@@ -259,12 +299,9 @@ fun ChatScreen(
                 android.util.Log.d("SHANJI", "send onSuccess acc=${acc.length} act=${actJson != null}")
                 val act = actJson
                 if (act != null) {
-                    // 有动作：清掉空气泡，走动作流程
-                    val idx = items.indexOfFirst { it.id == bubbleId }
-                    if (idx >= 0) items.removeAt(idx)
-                    if (acc.isNotBlank()) {
-                        items.add(ChatItem("r${System.nanoTime()}", "assistant", cleanText(acc).trim()))
-                    }
+                    // 首轮文本留在原气泡按打字机节奏蹦完——绝不删气泡重建
+                    //（重建会以全文初始化，一整段直接蹦出，就是用户看到的"一下子"）。
+                    // 首轮入库与二轮回复由 runQueryThenReply 负责，二轮另起新气泡继续蹦。
                     handleAct(act, acc)
                 } else if (acc.isBlank()) {
                     val idx = items.indexOfFirst { it.id == bubbleId }
@@ -291,6 +328,7 @@ fun ChatScreen(
     fun openConversation(id: String) {
         scope.launch {
             convId = id
+            typedSegs.clear() // 新会话：打字机进度清零（历史消息加载时按全文初始化，不重播）
             val msgs = withContext(Dispatchers.IO) { ChatStore.messages(ctx, id) }
             items.clear()
             visible(msgs).forEach { items.add(ChatItem(it.id, it.role, cleanText(it.content))) }
@@ -368,7 +406,7 @@ fun ChatScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(items, key = { it.id }) { m -> ChatBubble(m) }
+                items(items, key = { it.id }) { m -> ChatBubble(m, typedSegs) }
                 if (busy && items.lastOrNull()?.text?.isEmpty() != true) {
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -508,13 +546,13 @@ fun ChatScreen(
 }
 
 @Composable
-private fun ChatBubble(m: ChatItem) {
+private fun ChatBubble(
+    m: ChatItem,
+    typedSegs: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>
+) {
     val isUser = m.role == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        if (!isUser && m.text.isEmpty()) {
-            // 流式占位：光标点（DeepSeek 同款无气泡样式）
-            Text("▌", fontSize = 14.sp, color = Primary)
-        } else if (isUser) {
+        if (isUser) {
             // 用户消息：浅色气泡贴合文字——限宽换行，文字多长气泡多长，整体靠右
             Text(
                 m.text,
@@ -526,23 +564,42 @@ private fun ChatBubble(m: ChatItem) {
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             )
         } else {
-            // AI 回复：无气泡、全宽纯文本（DeepSeek 客户端样式，参照用户提供的截图）
-            // 打字机节奏：正文按 60~150 字/秒逐步打出（气泡内自带节奏，
-            // 不依赖外部协程——历史消息 shown 初始即全文，不重播打字动画）。
-            // 背景：deepseek-flash 0.9 秒就答完，直接上屏就是「一下子蹦一大段」。
+            // ===== 伪造分段打字机（不依赖网络流速）=====
+            // 数据到了也按"句子段"一截一截蹦：节奏完全由本地节拍器控制。
+            // 初始值：新消息创建时是空文本 → 从第0段开蹦；历史消息创建即全文 → 段数=全部，直接显示。
             val currentText by rememberUpdatedState(m.text)
-            var shown by remember(m.id) { mutableStateOf(m.text.length) }
+            if (m.id !in typedSegs) {
+                val initSegs = segmentEnds(m.text).size
+                typedSegs[m.id] = initSegs
+                android.util.Log.d("SHANJI", "bubble init id=${m.id.take(6)} textLen=${m.text.length} segs=$initSegs")
+            }
+            val segs = segmentEnds(currentText)
+            val shown = typedSegs[m.id] ?: 0
             LaunchedEffect(m.id) {
                 while (true) {
-                    val target = currentText.length
-                    if (shown < target) {
-                        shown = minOf(target, shown + (target - shown).coerceIn(2, 5))
+                    val total = segmentEnds(currentText).size
+                    val cur = typedSegs[m.id] ?: 0
+                    if (cur < total) {
+                        typedSegs[m.id] = cur + 1
+                        android.util.Log.d("SHANJI", "tick id=${m.id.take(6)} ${cur + 1}/$total len=${currentText.length}")
+                        // 段少→慢蹦保证短回复也有节奏感；段多→加速防拖沓
+                        delay(when { total <= 3 -> 300; total <= 10 -> 200; total <= 18 -> 140; else -> 70 })
+                    } else {
+                        delay(140) // 已追平，等流式新内容形成下一段
                     }
-                    delay(33)
                 }
             }
-            val display = currentText.substring(0, minOf(shown, currentText.length))
-            MarkdownText(display, Modifier.fillMaxWidth())
+            val display = when {
+                shown <= 0 -> ""
+                shown >= segs.size -> currentText
+                else -> currentText.substring(0, segs[shown - 1])
+            }
+            if (display.isEmpty()) {
+                // 段还没蹦出来的占位光标
+                Text("▌", fontSize = 14.sp, color = Primary)
+            } else {
+                MarkdownText(display, Modifier.fillMaxWidth())
+            }
         }
     }
 }
