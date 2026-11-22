@@ -21,8 +21,8 @@ android {
         applicationId = "com.shanji.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "1.6"
+        versionCode = 8
+        versionName = "1.7"
         buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
     }
 
@@ -87,8 +87,7 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
-    // 应用锁（指纹/人脸 + 设备凭据降级）
-    implementation("androidx.biometric:biometric:1.1.0")
+    // MainActivity 基类 FragmentActivity 需要
     implementation("androidx.fragment:fragment-ktx:1.8.5")
 
     // 网络：Retrofit + OkHttp + kotlinx-serialization（与项目 JSON 栈一致）

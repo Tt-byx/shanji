@@ -33,12 +33,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.shanji.app.data.AppStore
-import com.shanji.app.data.LockManager
 import com.shanji.app.ui.AccountsScreen
 import com.shanji.app.ui.CalendarScreen
 import com.shanji.app.ui.ChatScreen
 import com.shanji.app.ui.HomeScreen
-import com.shanji.app.ui.LockScreen
 import com.shanji.app.ui.LoginScreen
 import com.shanji.app.ui.ProfileScreen
 import com.shanji.app.ui.RecordSheet
@@ -55,11 +53,7 @@ class MainActivity : FragmentActivity() {
         AppStore.init(this)
         setContent {
             ShanJiTheme {
-                var unlocked by remember {
-                    mutableStateOf(!LockManager.isEnabled(this) || LockManager.unlocked)
-                }
-                if (unlocked) MainApp()
-                else LockScreen(onUnlocked = { unlocked = true })
+                MainApp()
             }
         }
     }
@@ -164,8 +158,7 @@ fun MainApp() {
                 else -> HomeScreen(
                     onEdit = { id -> editingId = id; showRecord = true },
                     onSearch = { screen = "search" },
-                    onAdd = { editingId = null; recordType = "expense"; showRecord = true },
-                    onCapture = { editingId = null; recordType = "expense"; showRecord = true }
+                    onAdd = { editingId = null; recordType = "expense"; showRecord = true }
                 )
             }
         }

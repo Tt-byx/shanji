@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -511,25 +512,22 @@ private fun ChatBubble(m: ChatItem) {
     val isUser = m.role == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
         if (!isUser && m.text.isEmpty()) {
-            // 流式占位：光标点
-            Text(
-                "▌", fontSize = 14.sp, color = Primary,
-                modifier = Modifier
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-            )
+            // 流式占位：光标点（DeepSeek 同款无气泡样式）
+            Text("▌", fontSize = 14.sp, color = Primary)
         } else if (isUser) {
+            // 用户消息：浅色气泡贴合文字——限宽换行，文字多长气泡多长，整体靠右
             Text(
                 m.text,
                 fontSize = 14.sp,
                 color = androidx.compose.ui.graphics.Color.White,
                 modifier = Modifier
+                    .widthIn(max = 300.dp)
                     .background(Primary, RoundedCornerShape(16.dp))
                     .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .fillMaxWidth(0.82f)
             )
         } else {
-            // DeepSeek 式打字机：正文按 60~150 字/秒逐步打出（气泡内自带节奏，
+            // AI 回复：无气泡、全宽纯文本（DeepSeek 客户端样式，参照用户提供的截图）
+            // 打字机节奏：正文按 60~150 字/秒逐步打出（气泡内自带节奏，
             // 不依赖外部协程——历史消息 shown 初始即全文，不重播打字动画）。
             // 背景：deepseek-flash 0.9 秒就答完，直接上屏就是「一下子蹦一大段」。
             val currentText by rememberUpdatedState(m.text)
@@ -544,13 +542,7 @@ private fun ChatBubble(m: ChatItem) {
                 }
             }
             val display = currentText.substring(0, minOf(shown, currentText.length))
-            MarkdownText(
-                display,
-                Modifier
-                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .fillMaxWidth(0.82f)
-            )
+            MarkdownText(display, Modifier.fillMaxWidth())
         }
     }
 }

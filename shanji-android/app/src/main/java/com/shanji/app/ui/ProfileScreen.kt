@@ -66,7 +66,6 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
     var confirmDemo by remember { mutableStateOf(false) }
     var showAiSettings by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
-    var showLock by remember { mutableStateOf(false) }
     var showBudget by remember { mutableStateOf(false) }
     // 登录态变化时触发重组（logout/login 后立即刷新卡片）
     var authVersion by remember { mutableStateOf(0) }
@@ -206,10 +205,6 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
             Column {
                 MenuItem("外观") { showTheme = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem(
-                    if (com.shanji.app.data.LockManager.isEnabled(context)) "应用锁 · 已开启" else "应用锁"
-                ) { showLock = true }
-                HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("预算设置") { showBudget = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("周期记账") { onRecurring() }
@@ -281,51 +276,6 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 }) { Text("保存") }
             },
             dismissButton = { TextButton(onClick = { showBudget = false }) { Text("取消") } }
-        )
-    }
-    if (showLock) {
-        var pinInput by remember { mutableStateOf("") }
-        val enabled = com.shanji.app.data.LockManager.isEnabled(context)
-        AlertDialog(
-            onDismissRequest = { showLock = false; pinInput = "" },
-            title = { Text("应用锁") },
-            text = {
-                Column {
-                    OutlinedTextField(
-                        value = pinInput,
-                        onValueChange = { pinInput = it.filter { c -> c.isDigit() }.take(6) },
-                        label = { Text(if (enabled) "新 PIN 码" else "PIN 码（4~6 位）") },
-                        singleLine = true,
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = pinInput.length in 4..6,
-                    onClick = {
-                        if (com.shanji.app.data.LockManager.setPin(context, pinInput)) {
-                            android.widget.Toast.makeText(context, "应用锁已开启", android.widget.Toast.LENGTH_SHORT).show()
-                            showLock = false; pinInput = ""
-                        }
-                    }
-                ) { Text(if (enabled) "修改" else "开启") }
-            },
-            dismissButton = {
-                Row {
-                    if (enabled) {
-                        TextButton(onClick = {
-                            com.shanji.app.data.LockManager.disable(context)
-                            android.widget.Toast.makeText(context, "应用锁已关闭", android.widget.Toast.LENGTH_SHORT).show()
-                            showLock = false; pinInput = ""
-                        }) { Text("关闭锁", color = Red) }
-                    }
-                    TextButton(onClick = { showLock = false; pinInput = "" }) { Text("取消") }
-                }
-            }
         )
     }
     if (showAiSettings) {

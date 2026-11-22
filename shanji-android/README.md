@@ -14,11 +14,11 @@ bash build.sh
 
 - 第一步构建环境镜像 `shanji-builder:1.0`（JDK17 + Android SDK 36 + Gradle 8.11.1），只做一次；
 - 第二步在容器里跑 `gradle assembleRelease`（R8 优化 + 资源收缩，真机性能更好；签名复用镜像内固定 keystore，可覆盖安装），Gradle 依赖缓存挂在 `shanji_gradle_cache` 卷里，二次构建很快；
-- 产物：`apk/ShanJi-v1.6-release.apk`（约 2.3MB，release 包）。
+- 产物：`apk/ShanJi-v1.7-release.apk`（约 2.3MB，release 包）。
 
 ### 装到手机 / 模拟器
 
-1. 把 `apk/ShanJi-v1.6-release.apk` 传到手机（微信文件传输助手 / QQ / 数据线 / 网盘均可）；
+1. 把 `apk/ShanJi-v1.7-release.apk` 传到手机（微信文件传输助手 / QQ / 数据线 / 网盘均可）；
 2. 手机上点开 APK → 系统提示「未知来源应用」→ 允许该来源安装 → 安装；
 3. 打开「闪记」，首次启动自动载入演示数据（「我的 → 清空全部数据」一键变全新账本）。
 
@@ -38,7 +38,7 @@ bash build.sh
 | 预算 | 月度总预算 + 分类预算、进度条、超支横幅与记账时 Toast 提醒 |
 | 周期记账 | 每月固定日期自动生成账单（房租/话费等），App 启动时补记 |
 | 桌面小组件 | 本月/今日支出 + 预算进度，记账后实时刷新 |
-| 我的 | 外观三态（跟随系统/浅/深）、应用锁（指纹/人脸 + PIN 兜底）、预算设置、周期记账、AI 设置、导出 JSON/CSV、恢复备份、清空数据 |
+| 我的 | 外观三态（跟随系统/浅/深）、预算设置、周期记账、AI 设置、导出 JSON/CSV、恢复备份、清空数据 |
 | 云同步 | 账号密码注册/登录（预留验证码通道），push→pull→LWW 同步账单/账户/预算，换机重装可找回 |
 | 数据 | Room + SQLite（tx.json 旧数据自动迁移并保留 .bak），软删墓碑支持删除云传播 |
 
@@ -52,7 +52,7 @@ shanji-android/
 └─ app/src/main/
    ├─ AndroidManifest.xml         分享入口、桌面小组件 receiver、明文流量放行（本地后端）
    └─ java/com/shanji/app/
-      ├─ MainActivity.kt          导航脚手架（5 Tab + 子页面 + 返回栈 + 应用锁）
+      ├─ MainActivity.kt          导航脚手架（5 Tab + 子页面 + 返回栈）
       ├─ ShareCaptureActivity.kt  分享确认填单页
       ├─ data/
       │   ├─ Model.kt             Tx/Account 领域模型 + TxStore(Room) + AppStore 单例
@@ -61,11 +61,10 @@ shanji-android/
       │   ├─ AccountStore / BudgetStore / RecurringStore
       │   ├─ RecurringScheduler.kt周期记账启动补记
       │   ├─ BackupManager.kt     JSON/CSV 导出导入
-      │   ├─ LockManager.kt       应用锁（PBKDF2 PIN + 生物识别）
       │   ├─ SyncManager.kt       登录 + 云同步（push/pull/LWW）
       │   ├─ WidgetUpdater.kt     小组件快照
       │   └─ net/                 Retrofit/OkHttp/DTO（baseUrl 可配置）
-      └─ ui/                      Home/Stats/Accounts/Calendar/Search/Recurring/Login/Lock/RecordSheet/BudgetCard/Profile/theme/widget
+      └─ ui/                      Home/Stats/Accounts/Calendar/Search/Recurring/Login/RecordSheet/BudgetCard/Profile/theme/widget
 ```
 
 ## 云同步（配套 shanji-server）
@@ -83,7 +82,7 @@ docker compose up --build -d     # MySQL:3306 + API:8080
 ```powershell
 $adb = "D:\Program Files\Netease\MuMu\nx_main\adb.exe"
 & $adb connect 127.0.0.1:16384
-& $adb install -r apk\ShanJi-v1.6-release.apk
+& $adb install -r apk\ShanJi-v1.7-release.apk
 & $adb shell am start -n com.shanji.app/.MainActivity
 & $adb shell uiautomator dump /sdcard/ui.xml     # UI 树断言
 & $adb shell screencap -p /sdcard/shot.png       # 截图（配合 pull，勿用 PowerShell > 重定向）

@@ -1,7 +1,5 @@
 package com.shanji.app.ui
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -57,7 +55,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.ui.Alignment
 import com.shanji.app.data.AiClient
@@ -99,16 +96,10 @@ fun RecordSheet(
     val scope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    // 自然语言/语音记账：一句话 → AI 解析 → 回填下方字段（不直接入库）
+    // 自然语言记账：一句话 → AI 解析 → 回填下方字段（不直接入库）
     var nlText by remember { mutableStateOf("") }
     var nlParsing by remember { mutableStateOf(false) }
     var nlError by remember { mutableStateOf<String?>(null) }
-    val micLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) VoiceInput.start(ctx) { txt -> if (txt.isNotBlank()) nlText = txt }
-        else nlError = "没拿到麦克风权限，去系统设置里开一下"
-    }
 
     var type by remember { mutableStateOf(editing?.type ?: initialType) }
     var amountText by remember {
@@ -207,17 +198,6 @@ fun RecordSheet(
                             } else {
                                 Icon(Icons.AutoMirrored.Filled.Send, "AI 解析", tint = Primary)
                             }
-                        }
-                    },
-                    trailingIcon = {
-                        IconButton(onClick = {
-                            if (VoiceInput.hasPermission(ctx)) {
-                                VoiceInput.start(ctx) { txt -> if (txt.isNotBlank()) nlText = txt }
-                            } else {
-                                micLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-                            }
-                        }) {
-                            Icon(Icons.Filled.Mic, "语音记账", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },
                     isError = nlError != null,

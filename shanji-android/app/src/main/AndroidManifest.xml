@@ -3,8 +3,6 @@
 
     <!-- AI 识别需要联网（v1.2 修复：v1.1 漏声明导致识别必定失败） -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- 语音记账：麦克风转文字 -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:label="闪记"

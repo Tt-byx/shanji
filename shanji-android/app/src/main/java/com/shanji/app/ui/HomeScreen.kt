@@ -47,11 +47,11 @@ import com.shanji.app.data.fmtAmount
 import com.shanji.app.ui.theme.BorderSubtle
 import com.shanji.app.ui.theme.Bg
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.Add
 import java.time.YearMonth
 
 @Composable
-fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () -> Unit = {}, onCapture: () -> Unit = {}) {
+fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () -> Unit = {}) {
     val txs = AppStore.store.txs
     var viewYm by remember { mutableStateOf(YearMonth.now()) }
     val isCurrent = viewYm == YearMonth.now()
@@ -71,8 +71,8 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () ->
             IconButton(onClick = onSearch) {
                 Icon(Icons.Filled.Search, "搜索", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            IconButton(onClick = onCapture) {
-                Icon(Icons.Filled.PhotoCamera, "截屏记账", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            IconButton(onClick = onAdd) {
+                Icon(Icons.Filled.Add, "记一笔", tint = MaterialTheme.colorScheme.primary)
             }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { viewYm = viewYm.minusMonths(1) }) {

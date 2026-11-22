@@ -7,6 +7,11 @@
 *.apk
 *.aab
 
+# 本地工具与逆向产物（REA / jadx / DeepSeek.apk，均不入库）
+rea/
+rea-tools/
+DeepSeek.apk
+
 # 构建产物
 .gradle/
 build/
