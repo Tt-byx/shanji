@@ -69,44 +69,9 @@ import java.time.YearMonth
 private data class ChatItem(
     val id: String,
     val role: String,       // user | assistant
-    val text: String
+    val text: String,
+    val streaming: Boolean = false  // 生成中：尾部显示闪烁光标 ▍
 )
-
-/**
- * 伪造打字机的切段器：按句子边界把回复切成"蹦字单位"。
- * 句末标点（。！？；…!?; 及换行，含其后的右引号右括号）后切一段；
- * 超过 40 字没有标点强制切一段兜底。返回各段末字符位置（exclusive）。
- */
-private fun segmentEnds(s: String): IntArray {
-    if (s.isEmpty()) return IntArray(0)
-    val ends = ArrayList<Int>()
-    val terminal = "。！？；…!?;\n"
-    val tail = "」』\"'）)]"
-    var i = 0
-    var last = 0
-    while (i < s.length) {
-        val c = s[i]
-        var cut = -1
-        if (c in terminal) {
-            var j = i + 1
-            while (j < s.length && s[j] in tail) j++
-            cut = j
-        } else if (c == '.' && (i + 1 >= s.length || s[i + 1] == ' ' || s[i + 1] == '\n')) {
-            // 英文句点仅在句尾位置切（避免 3.14 这类小数）
-            var j = i + 1
-            while (j < s.length && s[j] in tail) j++
-            cut = j
-        }
-        if (cut > 0) {
-            ends.add(cut); last = cut; i = cut; continue
-        }
-        if (i + 1 - last >= 40) {
-            ends.add(i + 1); last = i + 1
-        }
-        i++
-    }
-    return ends.toIntArray()
-}
 
 /** DeepSeek 偶发把换行转成字面 &#10;（可能跨 chunk），显示/入库前统一还原 */
 private fun cleanText(s: String): String =
@@ -139,9 +104,9 @@ fun ChatScreen(
             .getString("ai_persona", null)
     }
     val listState = rememberLazyListState()
-    // 伪造打字机状态：bubbleId → 已蹦出的段数。
+    // 流式显示进度：bubbleId → 已流出的字符数（Agent 式逐字流出的本地节拍进度）。
     // 放在页面级（而非气泡内 remember），滚动/重组导致 item 重建也不丢进度。
-    val typedSegs = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>() }
+    val typedChars = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>() }
     // 流式回调在 IO 线程，统一 post 回主线程改 Compose 状态
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
 
@@ -156,6 +121,14 @@ fun ChatScreen(
 
     LaunchedEffect(items.size) {
         if (items.isNotEmpty()) listState.animateScrollToItem(items.size - 1)
+    }
+    // Agent 式粘底跟随：内容流出增长时，只要视口贴着底部就持续滚到最后；
+    // 用户上翻读历史则不打断（最后一条不可见时不跟随）
+    val lastGrowLen = items.lastOrNull()?.text?.length ?: 0
+    LaunchedEffect(lastGrowLen) {
+        if (items.isEmpty()) return@LaunchedEffect
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+        if (lastVisible >= items.size - 1) listState.animateScrollToItem(items.size - 1)
     }
 
     /** 本月统计上下文（给 AI 的数字必须来自本机，禁止编造） */
@@ -197,7 +170,7 @@ fun ChatScreen(
             val mem = withContext(Dispatchers.IO) { ChatStore.buildMemory(ctx, cid) }
             val msgs = mem.map { AiChatMsg(it.first, it.second) }
             val bubbleId = "b${System.nanoTime()}"
-            items.add(ChatItem(bubbleId, "assistant", ""))
+            items.add(ChatItem(bubbleId, "assistant", "", streaming = true))
             var acc = ""
             runCatching {
                 AiClient.chatStream(ctx, msgs, monthContext(), persona,
@@ -217,7 +190,7 @@ fun ChatScreen(
                     if (idx >= 0) items.removeAt(idx)
                 } else {
                     val idx = items.indexOfFirst { it.id == bubbleId }
-                    if (idx >= 0) items[idx] = items[idx].copy(text = cleanText(acc))
+                    if (idx >= 0) items[idx] = items[idx].copy(text = cleanText(acc), streaming = false)
                     withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", cleanText(acc).trim()) }
                 }
                 busy = false
@@ -225,7 +198,7 @@ fun ChatScreen(
                 android.util.Log.w("SHANJI", "runQuery onFailure ${it.javaClass.simpleName}: ${it.message}")
                 val idx = items.indexOfFirst { it.id == bubbleId }
                 val msg = it.message ?: "没查成，稍后再试"
-                if (idx >= 0) items[idx] = items[idx].copy(text = msg)
+                if (idx >= 0) items[idx] = items[idx].copy(text = msg, streaming = false)
                 withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", msg) }
                 busy = false
             }
@@ -280,7 +253,7 @@ fun ChatScreen(
             android.util.Log.d("SHANJI", "send: memory 构建完成 msgs=${mem.size}")
             val msgs = mem.map { AiChatMsg(it.first, it.second) }
             val bubbleId = "b${System.nanoTime()}"
-            items.add(ChatItem(bubbleId, "assistant", ""))
+            items.add(ChatItem(bubbleId, "assistant", "", streaming = true))
             var acc = ""
             var actJson: String? = null
             runCatching {
@@ -299,17 +272,19 @@ fun ChatScreen(
                 android.util.Log.d("SHANJI", "send onSuccess acc=${acc.length} act=${actJson != null}")
                 val act = actJson
                 if (act != null) {
-                    // 首轮文本留在原气泡按打字机节奏蹦完——绝不删气泡重建
+                    // 首轮文本留在原气泡逐字流出——绝不删气泡重建
                     //（重建会以全文初始化，一整段直接蹦出，就是用户看到的"一下子"）。
-                    // 首轮入库与二轮回复由 runQueryThenReply 负责，二轮另起新气泡继续蹦。
+                    // 首轮入库与二轮回复由 runQueryThenReply 负责，二轮另起新气泡继续流。
+                    val idx = items.indexOfFirst { it.id == bubbleId }
+                    if (idx >= 0) items[idx] = items[idx].copy(streaming = false)
                     handleAct(act, acc)
                 } else if (acc.isBlank()) {
                     val idx = items.indexOfFirst { it.id == bubbleId }
-                    if (idx >= 0) items[idx] = items[idx].copy(text = "没听懂，换个说法试试")
+                    if (idx >= 0) items[idx] = items[idx].copy(text = "没听懂，换个说法试试", streaming = false)
                     busy = false
                 } else {
                     val idx = items.indexOfFirst { it.id == bubbleId }
-                    if (idx >= 0) items[idx] = items[idx].copy(text = cleanText(acc))
+                    if (idx >= 0) items[idx] = items[idx].copy(text = cleanText(acc), streaming = false)
                     withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", cleanText(acc).trim()) }
                     busy = false
                 }
@@ -317,7 +292,7 @@ fun ChatScreen(
                 android.util.Log.w("SHANJI", "send onFailure ${it.javaClass.simpleName}: ${it.message}")
                 val idx = items.indexOfFirst { it.id == bubbleId }
                 val msg = it.message ?: "没查成，稍后再试"
-                if (idx >= 0) items[idx] = items[idx].copy(text = msg)
+                if (idx >= 0) items[idx] = items[idx].copy(text = msg, streaming = false)
                 withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", msg) }
                 busy = false
             }
@@ -328,7 +303,7 @@ fun ChatScreen(
     fun openConversation(id: String) {
         scope.launch {
             convId = id
-            typedSegs.clear() // 新会话：打字机进度清零（历史消息加载时按全文初始化，不重播）
+            typedChars.clear() // 新会话：流式进度清零（历史消息加载时按全文初始化，不重播）
             val msgs = withContext(Dispatchers.IO) { ChatStore.messages(ctx, id) }
             items.clear()
             visible(msgs).forEach { items.add(ChatItem(it.id, it.role, cleanText(it.content))) }
@@ -406,7 +381,7 @@ fun ChatScreen(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(items, key = { it.id }) { m -> ChatBubble(m, typedSegs) }
+                items(items, key = { it.id }) { m -> ChatBubble(m, typedChars) }
                 if (busy && items.lastOrNull()?.text?.isEmpty() != true) {
                     item {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -548,7 +523,7 @@ fun ChatScreen(
 @Composable
 private fun ChatBubble(
     m: ChatItem,
-    typedSegs: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>
+    typedChars: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>
 ) {
     val isUser = m.role == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
@@ -564,41 +539,46 @@ private fun ChatBubble(
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             )
         } else {
-            // ===== 伪造分段打字机（不依赖网络流速）=====
-            // 数据到了也按"句子段"一截一截蹦：节奏完全由本地节拍器控制。
-            // 初始值：新消息创建时是空文本 → 从第0段开蹦；历史消息创建即全文 → 段数=全部，直接显示。
+            // ===== Agent 式逐字流出（参考 C:\Users\28182\Desktop\Agent 前端效果）=====
+            // 数据到达节奏无关紧要：本地节拍器按 token 流出感连续推进字符（渐快出、渐慢收），
+            // 尾部 streaming 期间显示闪烁光标 ▍（1s blink，同 Agent 的 CSS 效果）。
             val currentText by rememberUpdatedState(m.text)
-            if (m.id !in typedSegs) {
-                val initSegs = segmentEnds(m.text).size
-                typedSegs[m.id] = initSegs
-                android.util.Log.d("SHANJI", "bubble init id=${m.id.take(6)} textLen=${m.text.length} segs=$initSegs")
+            if (m.id !in typedChars) {
+                typedChars[m.id] = if (m.streaming) 0 else m.text.length
+                android.util.Log.d(
+                    "SHANJI", "reveal init id=${m.id.take(6)} streaming=${m.streaming} textLen=${m.text.length}"
+                )
             }
-            val segs = segmentEnds(currentText)
-            val shown = typedSegs[m.id] ?: 0
+            val shown = typedChars[m.id] ?: 0
             LaunchedEffect(m.id) {
+                var tick = 0
                 while (true) {
-                    val total = segmentEnds(currentText).size
-                    val cur = typedSegs[m.id] ?: 0
-                    if (cur < total) {
-                        typedSegs[m.id] = cur + 1
-                        android.util.Log.d("SHANJI", "tick id=${m.id.take(6)} ${cur + 1}/$total len=${currentText.length}")
-                        // 段少→慢蹦保证短回复也有节奏感；段多→加速防拖沓
-                        delay(when { total <= 3 -> 300; total <= 10 -> 200; total <= 18 -> 140; else -> 70 })
-                    } else {
-                        delay(140) // 已追平，等流式新内容形成下一段
+                    val len = currentText.length
+                    val cur = typedChars[m.id] ?: 0
+                    if (cur < len) {
+                        // 连续小步流出：剩余多时快（最多4字/25ms≈160字/秒），收尾渐慢到1字
+                        typedChars[m.id] = minOf(len, cur + (len - cur).coerceIn(1, 4))
+                        if (++tick % 20 == 0) {
+                            android.util.Log.d("SHANJI", "reveal id=${m.id.take(6)} ${(typedChars[m.id] ?: 0)}/$len")
+                        }
                     }
+                    delay(25)
                 }
             }
-            val display = when {
-                shown <= 0 -> ""
-                shown >= segs.size -> currentText
-                else -> currentText.substring(0, segs[shown - 1])
+            // 闪烁光标（Agent 同款 step-end blink，500ms 亮灭）
+            var blink by remember(m.id) { mutableStateOf(true) }
+            LaunchedEffect(m.id, m.streaming) {
+                if (!m.streaming) return@LaunchedEffect
+                while (true) { delay(500); blink = !blink }
             }
-            if (display.isEmpty()) {
-                // 段还没蹦出来的占位光标
-                Text("▌", fontSize = 14.sp, color = Primary)
+            val len = currentText.length
+            val display = currentText.substring(0, minOf(shown, len))
+            val cursor = if (m.streaming && blink) "▍" else ""
+            val text = display + cursor
+            if (text.isEmpty()) {
+                Text("▍", fontSize = 14.sp, color = Primary)
             } else {
-                MarkdownText(display, Modifier.fillMaxWidth())
+                MarkdownText(text, Modifier.fillMaxWidth())
             }
         }
     }
