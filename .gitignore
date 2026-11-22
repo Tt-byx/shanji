@@ -1,0 +1,32 @@
+# 本地工具目录（截图、Trae/WorkBuddy 内部数据）
+.screenshots/
+.trae/
+.workbuddy/
+
+# 安装包不入库（GitHub 不托管二进制产物）
+*.apk
+*.aab
+
+# 构建产物
+.gradle/
+build/
+app/build/
+target/
+local.properties
+.cxx/
+
+# 本地 SDK 压缩包（约 290MB，不入库）
+shanji-android/sdk/
+
+# IDE
+.idea/
+*.iml
+
+# 密钥与含真实 key 的本地覆盖文件
+*.pem
+*.jks
+*.keystore
+.env
+.env.local
+docker-compose.override.yml
+shanji-app.tar

@@ -1,0 +1,7 @@
+target/
+*.iml
+.idea/
+.env.local
+# 含真实 API key，禁止提交
+docker-compose.override.yml
+shanji-app.tar

@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#F9F9FB">
+<title>闪记 · 截屏记账</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%235046E5'/%3E%3Cpath d='M8.5 7l1.2-2.2h4.6L15.5 7M5.5 7h13a1 1 0 0 1 1 1v9a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 17V8a1 1 0 0 1 1-1z' stroke='%23fff' stroke-width='1.8' fill='none'/%3E%3Ccircle cx='12' cy='13' r='3' stroke='%23fff' stroke-width='1.8' fill='none'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ 屏幕一：明细 ============ -->
+  <section id="screen-home" class="screen active">
+    <header class="page-head">
+      <h1 class="app-title">闪记</h1>
+      <div class="month-switch">
+        <button id="month-prev" class="icon-btn" aria-label="上个月">
+          <svg viewBox="0 0 24 24"><path d="M14.5 6.5L9 12l5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+        <span id="month-label">10月</span>
+        <button id="month-next" class="icon-btn" aria-label="下个月">
+          <svg viewBox="0 0 24 24"><path d="M9.5 6.5L15 12l-5.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="overview-card card">
+      <div class="ov-label">本月支出</div>
+      <div class="ov-amount mono" id="home-expense">¥ 0.00</div>
+      <div class="ov-row">
+        <span class="ov-item"><em>收入</em><b class="mono pos" id="home-income">¥0.00</b></span>
+        <span class="ov-item"><em>结余</em><b class="mono" id="home-balance">¥0.00</b></span>
+      </div>
+    </div>
+
+    <button id="pending-bar" class="alert-bar hidden">
+      <svg viewBox="0 0 24 24" class="alert-icon"><rect x="3" y="7" width="18" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 7l1.2-2.2h4.6L15.5 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+      <span class="alert-text" id="pending-text">检测到 1 张付款截图待确认</span>
+      <svg viewBox="0 0 24 24" class="chev"><path d="M9.5 5.5l6.5 6.5-6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+
+    <div id="tx-list" class="tx-list"></div>
+  </section>
+
+  <!-- ============ 屏幕二：统计 ============ -->
+  <section id="screen-stats" class="screen">
+    <header class="page-head">
+      <h1 class="app-title">统计</h1>
+      <div class="seg" id="stats-seg">
+        <button data-range="week" class="seg-btn">周</button>
+        <button data-range="month" class="seg-btn active">月</button>
+      </div>
+    </header>
+
+    <div class="card stat-card">
+      <div class="ov-label" id="stat-total-label">10月总支出</div>
+      <div class="ov-amount mono" id="stat-total">¥ 0.00</div>
+      <div class="trend-row" id="stat-trend-row">
+        <svg viewBox="0 0 24 24" class="trend-icon"><path d="M3.5 7.5L10 14l3.5-3.5 6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M20 12.5V17h-4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span id="stat-trend-text">较上月少花 ¥0</span>
+      </div>
+    </div>
+
+    <div class="card chart-card">
+      <h2 class="card-title" id="chart-title">近 5 个月趋势</h2>
+      <div class="bar-chart" id="bar-chart"></div>
+    </div>
+
+    <div class="card rank-card">
+      <h2 class="card-title">分类占比</h2>
+      <div id="cat-breakdown"></div>
+    </div>
+
+    <div class="insight-card" id="insight-card">
+      <svg viewBox="0 0 24 24" class="insight-icon"><path d="M9 18.5h6M10 21.5h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 2.5a6 6 0 0 1 3.5 10.9c-.6.5-1 1.2-1 2v.1h-5v-.1c0-.8-.4-1.5-1-2A6 6 0 0 1 12 2.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      <div class="insight-body" id="insight-body"></div>
+    </div>
+  </section>
+
+  <!-- ============ 屏幕三：我的 ============ -->
+  <section id="screen-profile" class="screen">
+    <header class="page-head"><h1 class="app-title">我的</h1></header>
+
+    <div class="card profile-card">
+      <div class="profile-stats">
+        <div class="pstat"><em id="profile-count">0</em><span>累计笔数</span></div>
+        <div class="pstat"><em id="profile-expense">¥0</em><span>累计支出</span></div>
+        <div class="pstat"><em id="profile-income">¥0</em><span>累计收入</span></div>
+      </div>
+      <p class="storage-hint" id="storage-hint">数据保存在本机浏览器中，不上传任何服务器。</p>
+    </div>
+
+    <div class="card menu-card">
+      <button class="menu-item" id="btn-demo">
+        <span class="menu-label">载入演示数据</span><span class="menu-sub">体验完整功能，可随时清空</span>
+      </button>
+      <button class="menu-item" id="btn-export">
+        <span class="menu-label">导出数据 (JSON)</span><span class="menu-sub">备份全部账单到本地文件</span>
+      </button>
+      <button class="menu-item danger" id="btn-clear">
+        <span class="menu-label">清空全部数据</span><span class="menu-sub">不可恢复，请先导出备份</span>
+      </button>
+    </div>
+
+    <div class="about">闪记 FlashNote v1.0 · 截屏粘贴，一秒记账</div>
+  </section>
+
+  <!-- ============ 底部胶囊 Tab Bar ============ -->
+  <nav class="tabbar" id="tabbar">
+    <div class="pill">
+      <button class="tab active" data-screen="home">
+        <svg viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1v-9.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+        <span>明细</span>
+      </button>
+      <button class="tab" data-screen="stats">
+        <svg viewBox="0 0 24 24"><path d="M5 20v-8M12 20V5M19 20v-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>统计</span>
+      </button>
+      <button class="tab" data-screen="scan">
+        <svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 7l1.2-2.2h4.6L15.5 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        <span>截屏</span>
+      </button>
+      <button class="tab" data-screen="profile">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4.5 20c.8-3.6 3.9-5.5 7.5-5.5s6.7 1.9 7.5 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <span>我的</span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ============ 截屏识别（底部滑出） ============ -->
+  <div class="sheet-mask" id="scan-sheet">
+    <div class="sheet">
+      <header class="sheet-head">
+        <button class="text-btn" id="scan-cancel">取消</button>
+        <h2 class="sheet-title">识别结果</h2>
+        <span class="head-space"></span>
+      </header>
+
+      <div class="sheet-body">
+        <!-- 步骤一：选截图 -->
+        <div id="scan-step-pick">
+          <div id="drop-zone" class="drop-zone" tabindex="0">
+            <svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 7l1.2-2.2h4.6L15.5 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="13.5" r="3.4" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+            <b>粘贴或上传付款截图</b>
+            <span>付款后截图，点这里选择图片，或直接 Ctrl+V 粘贴</span>
+          </div>
+          <input type="file" id="file-input" accept="image/*" hidden>
+        </div>
+
+        <!-- 步骤二：确认识别结果 -->
+        <div id="scan-step-form" class="hidden">
+          <div class="shot-card">
+            <div class="shot-img"><img id="shot-preview" alt="付款截图预览"></div>
+            <div class="shot-meta">
+              <span class="shot-src">来源：本机截图</span>
+              <span class="conf-chip">已载入 · 待确认</span>
+            </div>
+          </div>
+
+          <div class="card form-card">
+            <div class="form-row">
+              <label class="f-label">金额</label>
+              <div class="f-amount"><span>¥</span><input type="number" id="f-amount" step="0.01" min="0.01" placeholder="0.00" inputmode="decimal"></div>
+            </div>
+            <div class="form-row">
+              <label class="f-label" for="f-merchant">商户 / 事项</label>
+              <input type="text" id="f-merchant" class="f-input" placeholder="如：瑞幸咖啡" maxlength="30">
+            </div>
+            <div class="form-row">
+              <label class="f-label" for="f-time">时间</label>
+              <input type="datetime-local" id="f-time" class="f-input">
+            </div>
+            <div class="form-col">
+              <span class="f-label">分类</span>
+              <div class="chip-wrap" id="chip-wrap"></div>
+            </div>
+            <div class="form-col">
+              <label class="f-label" for="f-note">备注</label>
+              <input type="text" id="f-note" class="f-input" placeholder="添加备注，如：下午茶 · 和小林" maxlength="100">
+            </div>
+          </div>
+
+          <div class="type-switch" id="type-switch">
+            <button data-type="expense" class="active">支出</button>
+            <button data-type="income">收入</button>
+          </div>
+        </div>
+      </div>
+
+      <footer class="sheet-foot" id="scan-foot">
+        <button id="scan-save" class="primary-btn hidden">保存这笔账单</button>
+      </footer>
+    </div>
+  </div>
+
+  <!-- ============ 编辑账单（底部滑出） ============ -->
+  <div class="sheet-mask" id="edit-sheet">
+    <div class="sheet">
+      <header class="sheet-head">
+        <button class="text-btn danger" id="edit-delete">删除</button>
+        <h2 class="sheet-title">编辑账单</h2>
+        <span class="head-space"></span>
+      </header>
+      <div class="sheet-body">
+        <div class="card form-card">
+          <div class="form-row">
+            <label class="f-label">金额</label>
+            <div class="f-amount"><span>¥</span><input type="number" id="e-amount" step="0.01" min="0.01" inputmode="decimal"></div>
+          </div>
+          <div class="form-row">
+            <label class="f-label" for="e-merchant">商户 / 事项</label>
+            <input type="text" id="e-merchant" class="f-input" maxlength="30">
+          </div>
+          <div class="form-row">
+            <label class="f-label" for="e-time">时间</label>
+            <input type="datetime-local" id="e-time" class="f-input">
+          </div>
+          <div class="form-col">
+            <span class="f-label">分类</span>
+            <div class="chip-wrap" id="echip-wrap"></div>
+          </div>
+          <div class="form-col">
+            <label class="f-label" for="e-note">备注</label>
+            <input type="text" id="e-note" class="f-input" placeholder="添加备注" maxlength="100">
+          </div>
+          <div class="type-switch" id="etype-switch">
+            <button data-type="expense" class="active">支出</button>
+            <button data-type="income">收入</button>
+          </div>
+        </div>
+        <p class="edit-meta" id="edit-meta"></p>
+      </div>
+      <footer class="sheet-foot">
+        <button id="edit-save" class="primary-btn">保存修改</button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+</div>
+
+<script src="js/store.js"></script>
+<script src="js/ledger.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

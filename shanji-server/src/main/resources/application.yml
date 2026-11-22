@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: shanji-server
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DB:shanji}?useSSL=false&allowPublicKeyRetrieval=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: ${MYSQL_USER:shanji}
+    password: ${MYSQL_PASSWORD:shanji123}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+shanji:
+  jwt:
+    secret: ${JWT_SECRET:shanji-dev-secret-key-change-me-in-production-2026}
+    expire-days: 30
+  ai:
+    apiKey: ${GLM_API_KEY:}
+    baseUrl: ${GLM_BASE_URL:https://open.bigmodel.cn/api/paas/v4}
+    model: ${GLM_MODEL:glm-4-flash}
