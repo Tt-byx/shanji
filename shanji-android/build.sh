@@ -14,7 +14,7 @@ MSYS_NO_PATHCONV=1 docker run --rm \
   -v "${WIN_DIR}:/work" \
   -v shanji_gradle_cache:/root/.gradle \
   shanji-builder:1.0 \
-  sh -c "cd /work && gradle --no-daemon assembleRelease && mkdir -p apk && cp app/build/outputs/apk/release/app-release.apk apk/ShanJi-v1.5-release.apk && echo APK_BUILT"
+  sh -c "cd /work && gradle --no-daemon assembleRelease && mkdir -p apk && cp app/build/outputs/apk/release/app-release.apk apk/ShanJi-v1.6-release.apk && echo APK_BUILT"
 
 echo "== 产物 =="
 ls -lh apk/

@@ -6,6 +6,12 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// 服务器地址：优先读本地 server-url.properties（已 gitignore，不上传 GitHub），
+// 缺省回落到占位地址——仓库里永远不出现真实服务器 IP
+val serverUrl: String = rootProject.file("server-url.properties").takeIf { it.exists() }
+    ?.readLines()?.firstOrNull { it.startsWith("serverUrl=") }?.substringAfter("=")?.trim()
+    ?: "http://192.168.1.100:8080/"
+
 android {
     namespace = "com.shanji.app"
     compileSdk = 36
@@ -15,8 +21,9 @@ android {
         applicationId = "com.shanji.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 7
+        versionName = "1.6"
+        buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
     }
 
     signingConfigs {
@@ -51,6 +58,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"

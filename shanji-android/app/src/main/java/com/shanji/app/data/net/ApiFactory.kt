@@ -9,11 +9,11 @@ import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import java.util.concurrent.TimeUnit
 
-/* Retrofit 单例工厂：baseUrl 可在登录页修改（模拟器默认 10.0.2.2 回环宿主机） */
+/* Retrofit 单例工厂：baseUrl 由构建时 BuildConfig.SERVER_URL 固定注入，
+   登录页不再展示/允许修改服务器地址（私有配置 server-url.properties 不入库） */
 object ApiFactory {
 
-    const val PREFS = "shanji_server"
-    const val DEFAULT_URL = "http://192.168.1.100:8080/"
+    val DEFAULT_URL: String = com.shanji.app.BuildConfig.SERVER_URL
 
     // encodeDefaults=true：accountId 等默认值字段必须上送，否则服务端收到 null 违反非空约束
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -23,16 +23,7 @@ object ApiFactory {
     private var cachedSync: SyncApi? = null
     private var cachedAi: AiApi? = null
 
-    fun baseUrl(context: Context): String =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString("url", DEFAULT_URL) ?: DEFAULT_URL
-
-    fun setBaseUrl(context: Context, url: String) {
-        val normalized = if (url.endsWith("/")) url else "$url/"
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putString("url", normalized).apply()
-        cachedUrl = null // 失效缓存
-    }
+    fun baseUrl(context: Context): String = DEFAULT_URL
 
     private fun client(): OkHttpClient =
         OkHttpClient.Builder()

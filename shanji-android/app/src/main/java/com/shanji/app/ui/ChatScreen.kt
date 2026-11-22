@@ -42,6 +42,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,6 +60,7 @@ import com.shanji.app.data.net.AiChatMsg
 import com.shanji.app.ui.theme.Primary
 import com.shanji.app.ui.theme.Red
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.YearMonth
@@ -169,14 +171,18 @@ fun ChatScreen(
                     onAct = { act -> /* 二轮不再递归动作 */ }
                 )
             }.onSuccess {
+                android.util.Log.d("SHANJI", "runQuery onSuccess acc=${acc.length}")
                 if (acc.isBlank()) {
                     val idx = items.indexOfFirst { it.id == bubbleId }
                     if (idx >= 0) items.removeAt(idx)
                 } else {
+                    val idx = items.indexOfFirst { it.id == bubbleId }
+                    if (idx >= 0) items[idx] = items[idx].copy(text = cleanText(acc))
                     withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", cleanText(acc).trim()) }
                 }
                 busy = false
             }.onFailure {
+                android.util.Log.w("SHANJI", "runQuery onFailure ${it.javaClass.simpleName}: ${it.message}")
                 val idx = items.indexOfFirst { it.id == bubbleId }
                 val msg = it.message ?: "没查成，稍后再试"
                 if (idx >= 0) items[idx] = items[idx].copy(text = msg)
@@ -222,13 +228,16 @@ fun ChatScreen(
         if (q.isEmpty() || busy) return
         val cid = convId ?: return
         input = ""; busy = true
+        android.util.Log.d("SHANJI", "send: 发送 q=${q.take(30)}")
         items.add(ChatItem("u${System.nanoTime()}", "user", q))
         scope.launch {
             withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "user", q) }
+            android.util.Log.d("SHANJI", "send: user 已入库")
             val mem = withContext(Dispatchers.IO) {
                 ChatStore.maybeAutoTitle(ctx, cid, q)
                 ChatStore.buildMemory(ctx, cid)
             }
+            android.util.Log.d("SHANJI", "send: memory 构建完成 msgs=${mem.size}")
             val msgs = mem.map { AiChatMsg(it.first, it.second) }
             val bubbleId = "b${System.nanoTime()}"
             items.add(ChatItem(bubbleId, "assistant", ""))
@@ -246,6 +255,7 @@ fun ChatScreen(
                     onAct = { act -> mainHandler.post { actJson = act } }
                 )
             }.onSuccess {
+                android.util.Log.d("SHANJI", "send onSuccess acc=${acc.length} act=${actJson != null}")
                 val act = actJson
                 if (act != null) {
                     // 有动作：清掉空气泡，走动作流程
@@ -260,10 +270,13 @@ fun ChatScreen(
                     if (idx >= 0) items[idx] = items[idx].copy(text = "没听懂，换个说法试试")
                     busy = false
                 } else {
+                    val idx = items.indexOfFirst { it.id == bubbleId }
+                    if (idx >= 0) items[idx] = items[idx].copy(text = cleanText(acc))
                     withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", cleanText(acc).trim()) }
                     busy = false
                 }
             }.onFailure {
+                android.util.Log.w("SHANJI", "send onFailure ${it.javaClass.simpleName}: ${it.message}")
                 val idx = items.indexOfFirst { it.id == bubbleId }
                 val msg = it.message ?: "没查成，稍后再试"
                 if (idx >= 0) items[idx] = items[idx].copy(text = msg)
@@ -516,9 +529,23 @@ private fun ChatBubble(m: ChatItem) {
                     .fillMaxWidth(0.82f)
             )
         } else {
-            // AI 回复：Markdown 排版（**加粗**/列表/表格/代码块…）
+            // DeepSeek 式打字机：正文按 60~150 字/秒逐步打出（气泡内自带节奏，
+            // 不依赖外部协程——历史消息 shown 初始即全文，不重播打字动画）。
+            // 背景：deepseek-flash 0.9 秒就答完，直接上屏就是「一下子蹦一大段」。
+            val currentText by rememberUpdatedState(m.text)
+            var shown by remember(m.id) { mutableStateOf(m.text.length) }
+            LaunchedEffect(m.id) {
+                while (true) {
+                    val target = currentText.length
+                    if (shown < target) {
+                        shown = minOf(target, shown + (target - shown).coerceIn(2, 5))
+                    }
+                    delay(33)
+                }
+            }
+            val display = currentText.substring(0, minOf(shown, currentText.length))
             MarkdownText(
-                m.text,
+                display,
                 Modifier
                     .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
                     .padding(horizontal = 14.dp, vertical = 10.dp)

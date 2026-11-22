@@ -1,9 +1,12 @@
 # Gradle / Android 构建产物
 .gradle/
+.kotlin/
 build/
 app/build/
 apk/
 local.properties
+# 本地服务器地址（私有，不入库）
+server-url.properties
 *.iml
 .idea/
 .cxx/

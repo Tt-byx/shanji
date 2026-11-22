@@ -40,7 +40,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shanji.app.data.SyncManager
-import com.shanji.app.data.net.ApiFactory
 import com.shanji.app.ui.theme.Primary
 import com.shanji.app.ui.theme.Red
 import kotlinx.coroutines.launch
@@ -55,7 +54,6 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
-    var serverUrl by remember { mutableStateOf(ApiFactory.baseUrl(context)) }
     var error by remember { mutableStateOf<String?>(null) }
     var testMsg by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -71,7 +69,6 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
         error = null; busy = true
         scope.launch {
             val result = runCatching {
-                ApiFactory.setBaseUrl(context, serverUrl)
                 if (mode == "login") SyncManager.login(context, u, password)
                 else SyncManager.register(context, u, password)
             }
@@ -148,20 +145,10 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
         )
         Spacer(Modifier.height(20.dp))
 
-        OutlinedTextField(
-            value = serverUrl,
-            onValueChange = { serverUrl = it; testMsg = null },
-            label = { Text("服务器地址") },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = Primary),
-            modifier = Modifier.fillMaxWidth()
-        )
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = {
                 testMsg = "…"
                 scope.launch {
-                    ApiFactory.setBaseUrl(context, serverUrl)
                     testMsg = SyncManager.testConnection(context)
                 }
             }) { Text("测试连接", color = Primary) }

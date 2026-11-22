@@ -13,12 +13,13 @@ import kotlinx.coroutines.withContext
 
 /**
  * AI 中转客户端（服务器持 GLM key）。
+ * AI 接口免登录（除云同步外全功能可用）：登录了就带 token，没登录不带。
  * 所有异常统一过 SyncManager.friendlyError，抛出的 message 已是人话。
  */
 object AiClient {
 
-    private fun bearer(context: Context): String =
-        "Bearer " + (SyncManager.token(context) ?: error("尚未登录"))
+    private fun bearer(context: Context): String? =
+        SyncManager.token(context)?.let { "Bearer $it" }
 
     /** 一句话记账解析：「午饭 15 块」→ 账单字段 */
     suspend fun parse(context: Context, rawText: String, persona: String? = null): AiParseData =
@@ -67,17 +68,22 @@ object AiClient {
         }.getOrElse { throw Exception(SyncManager.friendlyError(it)) }
         val sb = StringBuilder()
         try {
+            android.util.Log.d("SHANJI", "chatStream: 连接建立前")
             val reader = java.io.InputStreamReader(body.source().inputStream(), Charsets.UTF_8)
+            android.util.Log.d("SHANJI", "chatStream: 已拿到响应头，开始读流")
             val buf = CharArray(4096)
             // 首行判定（#ACT# 可能跨 chunk）：攒够 5 字符或等到换行再决定
             val head = StringBuilder()
             var headDone = false
+            var chunks = 0
             fun emit(s: String) {
                 if (s.isNotEmpty()) { sb.append(s); onDelta(s) }
             }
             while (true) {
                 val n = reader.read(buf)
                 if (n <= 0) break
+                chunks++
+                if (chunks <= 3 || chunks % 50 == 0) android.util.Log.d("SHANJI", "chatStream: chunk#$chunks n=$n")
                 val chunk = String(buf, 0, n)
                 if (headDone) { emit(chunk); continue }
                 head.append(chunk)
@@ -101,7 +107,9 @@ object AiClient {
                 }
             }
             if (!headDone) emit(head.toString()) // 流在首行结束前断开
+            android.util.Log.d("SHANJI", "chatStream: 读流结束 chunks=$chunks len=${sb.length}")
         } catch (e: Exception) {
+            android.util.Log.w("SHANJI", "chatStream: 异常 ${e.javaClass.simpleName}: ${e.message} 已收=${sb.length}")
             if (sb.isEmpty()) throw Exception(SyncManager.friendlyError(e))
             // 已有部分内容：降级为把已收到的当完整回复
         } finally {
