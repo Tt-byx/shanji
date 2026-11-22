@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -82,6 +83,7 @@ fun LoginScreen(onBack: () -> Unit, onLoggedIn: () -> Unit) {
 
     Column(
         Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+            .imePadding() // Android 15+ 键盘不缩窗口：否则密码框会被键盘盖住
             .padding(horizontal = 24.dp)
     ) {
         Row(

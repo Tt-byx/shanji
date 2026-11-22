@@ -3,7 +3,11 @@ package com.shanji.app
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.fragment.app.FragmentActivity
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.BarChart
@@ -16,6 +20,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScaffoldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -25,6 +30,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.shanji.app.data.AppStore
 import com.shanji.app.data.LockManager
@@ -91,10 +97,17 @@ fun MainApp() {
         TabItem("profile", "我的", Icons.Filled.Person)
     )
 
+    // Android 15+ 强制 edge-to-edge 后 adjustResize 失效：键盘弹出时窗口不缩，
+    // 只有 WindowInsets.ime 变化。此时若底部导航栏和 contentWindowInsets 的底部
+    // 空间还留着，会在输入框和键盘之间顶出一大段空隙（真机掉帧外的另一真机问题）。
+    // 处理：键盘弹出 → 收起底部导航栏、清掉内容区底部预留，让子页面的 imePadding 精确贴键盘。
+    val density = LocalDensity.current
+    val imeOpen = WindowInsets.ime.getBottom(density) > 0
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
+            if (!imeOpen) NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
                 tabs.forEach { tab ->
                     NavigationBarItem(
                         selected = screen == tab.key,
@@ -111,6 +124,12 @@ fun MainApp() {
                     )
                 }
             }
+        },
+        // 键盘弹出时只清底部（顶栏状态栏 inset 保留）
+        contentWindowInsets = if (imeOpen) {
+            WindowInsets(0.dp, WindowInsets.statusBars.asPaddingValues().calculateTopPadding(), 0.dp, 0.dp)
+        } else {
+            ScaffoldDefaults.contentWindowInsets
         }
     ) { padding ->
         androidx.compose.foundation.layout.Box(Modifier.padding(padding)) {

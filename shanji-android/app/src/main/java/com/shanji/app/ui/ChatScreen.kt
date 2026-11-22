@@ -505,16 +505,22 @@ private fun ChatBubble(m: ChatItem) {
                     .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             )
-        } else {
+        } else if (isUser) {
             Text(
                 m.text,
                 fontSize = 14.sp,
-                color = if (isUser) androidx.compose.ui.graphics.Color.White else MaterialTheme.colorScheme.onSurface,
+                color = androidx.compose.ui.graphics.Color.White,
                 modifier = Modifier
-                    .background(
-                        if (isUser) Primary else MaterialTheme.colorScheme.surface,
-                        RoundedCornerShape(16.dp)
-                    )
+                    .background(Primary, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .fillMaxWidth(0.82f)
+            )
+        } else {
+            // AI 回复：Markdown 排版（**加粗**/列表/表格/代码块…）
+            MarkdownText(
+                m.text,
+                Modifier
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
                     .padding(horizontal = 14.dp, vertical = 10.dp)
                     .fillMaxWidth(0.82f)
             )

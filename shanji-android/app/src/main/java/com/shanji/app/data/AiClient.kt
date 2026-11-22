@@ -49,6 +49,10 @@ object AiClient {
      * 流式对话：onDelta 逐段收到正文（主线程回调由调用方保证）；
      * 首行 #ACT# 动作行通过 onAct 单独返回（正文不含它）。
      * 返回完整正文（不含动作行）。
+     *
+     * 读取方式：按网络 chunk 即读即抛（InputStreamReader 自带 UTF-8 跨包解码）。
+     * 旧实现按行读（readUtf8Line），模型不发换行就一直憋着 → 整段整段蹦，
+     * 看起来根本不是流式；换行密集时又变成「先一句再一句」。
      */
     suspend fun chatStream(
         context: Context,
@@ -63,19 +67,40 @@ object AiClient {
         }.getOrElse { throw Exception(SyncManager.friendlyError(it)) }
         val sb = StringBuilder()
         try {
-            body.source().use { src ->
-                // 按 UTF-8 行读：chunked 流里 \n 分隔
-                while (!src.exhausted()) {
-                    val line = src.readUtf8Line() ?: break
-                    if (line.isEmpty()) continue
-                    if (line.startsWith("#ACT#")) {
-                        onAct(line.substring(5))
-                    } else {
-                        sb.append(line).append('\n')
-                        onDelta(line + "\n")
+            val reader = java.io.InputStreamReader(body.source().inputStream(), Charsets.UTF_8)
+            val buf = CharArray(4096)
+            // 首行判定（#ACT# 可能跨 chunk）：攒够 5 字符或等到换行再决定
+            val head = StringBuilder()
+            var headDone = false
+            fun emit(s: String) {
+                if (s.isNotEmpty()) { sb.append(s); onDelta(s) }
+            }
+            while (true) {
+                val n = reader.read(buf)
+                if (n <= 0) break
+                val chunk = String(buf, 0, n)
+                if (headDone) { emit(chunk); continue }
+                head.append(chunk)
+                val nl = head.indexOf('\n')
+                when {
+                    nl >= 0 -> {
+                        headDone = true
+                        val first = head.substring(0, nl)
+                        if (first.trim().startsWith("#ACT#")) {
+                            onAct(first.trim().substring(5))
+                        } else {
+                            emit(first)      // 首行正文
+                            emit("\n")       // 模型自己的换行保留
+                        }
+                        emit(head.substring(nl + 1))
+                    }
+                    head.length >= 5 && !head.startsWith("#ACT#") -> {
+                        headDone = true
+                        emit(head.toString())
                     }
                 }
             }
+            if (!headDone) emit(head.toString()) // 流在首行结束前断开
         } catch (e: Exception) {
             if (sb.isEmpty()) throw Exception(SyncManager.friendlyError(e))
             // 已有部分内容：降级为把已收到的当完整回复
