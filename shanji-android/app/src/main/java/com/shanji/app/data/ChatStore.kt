@@ -69,9 +69,19 @@ object ChatStore {
     suspend fun messages(context: Context, convId: String): List<ChatMessageEntity> =
         db(context).chatMessageDao().listByConversation(convId)
 
-    suspend fun append(context: Context, convId: String, role: String, content: String): ChatMessageEntity {
+    /**
+     * 落一条消息。[id] 可指定：流式回复用服务端 messageId 作主键，
+     * 配合 Room REPLACE 实现幂等（断点续传完成后再落库不会重复）。
+     */
+    suspend fun append(
+        context: Context,
+        convId: String,
+        role: String,
+        content: String,
+        id: String = UUID.randomUUID().toString()
+    ): ChatMessageEntity {
         val m = ChatMessageEntity(
-            id = UUID.randomUUID().toString(),
+            id = id,
             conversationId = convId,
             role = role,
             content = content,

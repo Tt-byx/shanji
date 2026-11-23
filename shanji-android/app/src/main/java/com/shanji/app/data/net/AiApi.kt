@@ -3,8 +3,12 @@ package com.shanji.app.data.net
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
+import retrofit2.http.Path
+import retrofit2.http.Query
+import retrofit2.http.Streaming
 
 /* ---- AI 中转接口（服务器持有 GLM key） DTO ---- */
 
@@ -68,11 +72,24 @@ interface AiApi {
         @Body req: AiChatReq
     ): ApiResponse<AiChatData>
 
-    /** 流式对话：chunked 文本，调用方逐段读 body.source() */
-    @POST("api/ai/chat/stream")
-    suspend fun chatStream(
+    /** 启动后台生成任务，立即返回 messageId（生成在服务端执行，不依赖客户端连接） */
+    @POST("api/ai/chat/task")
+    suspend fun startTask(
         @Header("Authorization") bearer: String?,
         @Body req: AiChatReq
+    ): ApiResponse<String>
+
+    /**
+     * SSE 断点续传读取：offset = 已收到的正文字符数，服务端只补发缺失部分；
+     * 任务已完成则补发完整内容后发 done 关闭。
+     * @Streaming 必须有：否则 Retrofit 把整个响应缓冲进内存，流式即失效。
+     */
+    @Streaming
+    @GET("api/ai/chat/stream/{id}")
+    suspend fun streamTask(
+        @Header("Authorization") bearer: String?,
+        @Path("id") id: String,
+        @Query("offset") offset: Long
     ): okhttp3.ResponseBody
 
     @POST("api/ai/insight")

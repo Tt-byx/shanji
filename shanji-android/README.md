@@ -14,11 +14,11 @@ bash build.sh
 
 - 第一步构建环境镜像 `shanji-builder:1.0`（JDK17 + Android SDK 36 + Gradle 8.11.1），只做一次；
 - 第二步在容器里跑 `gradle assembleRelease`（R8 优化 + 资源收缩，真机性能更好；签名复用镜像内固定 keystore，可覆盖安装），Gradle 依赖缓存挂在 `shanji_gradle_cache` 卷里，二次构建很快；
-- 产物：`apk/ShanJi-v1.9-release.apk`（约 2MB，release 包）。
+- 产物：`apk/ShanJi-v1.10-release.apk`（约 2MB，release 包）。
 
 ### 装到手机 / 模拟器
 
-1. 把 `apk/ShanJi-v1.9-release.apk` 传到手机（微信文件传输助手 / QQ / 数据线 / 网盘均可）；
+1. 把 `apk/ShanJi-v1.10-release.apk` 传到手机（微信文件传输助手 / QQ / 数据线 / 网盘均可）；
 2. 手机上点开 APK → 系统提示「未知来源应用」→ 允许该来源安装 → 安装；
 3. 打开「闪记」，首次启动自动载入演示数据（「我的 → 清空全部数据」一键变全新账本）。
 
@@ -82,7 +82,7 @@ docker compose up --build -d     # MySQL:3306 + API:8080
 ```powershell
 $adb = "D:\Program Files\Netease\MuMu\nx_main\adb.exe"
 & $adb connect 127.0.0.1:16384
-& $adb install -r apk\ShanJi-v1.9-release.apk
+& $adb install -r apk\ShanJi-v1.10-release.apk
 & $adb shell am start -n com.shanji.app/.MainActivity
 & $adb shell uiautomator dump /sdcard/ui.xml     # UI 树断言
 & $adb shell screencap -p /sdcard/shot.png       # 截图（配合 pull，勿用 PowerShell > 重定向）

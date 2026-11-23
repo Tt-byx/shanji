@@ -8,3 +8,6 @@ shanji-app.tar
 shanji-app.tar.gz
 # 本地构建用（注入宿主代理 settings），不入库
 Dockerfile.local
+
+*.tar
+*.tar.gz
