@@ -142,14 +142,15 @@ object SyncManager {
             val db = AppDatabase.getInstance(context)
             val api = ApiFactory.sync(context)
 
-            // 1) push：脏账单 + 全量账户/预算（列表很小，全量推由服务端 LWW 裁决）
+            // 1) push：脏账单 + 全量账户/预算/固定支出（列表很小，全量推由服务端 LWW 裁决）
             val dirty = db.txDao().listDirty()
             val pushResp = api.push(
                 bearer,
                 PushRequest(
                     txs = dirty,
                     accounts = db.accountDao().listAll(),
-                    budgets = db.budgetDao().listAll()
+                    budgets = db.budgetDao().listAll(),
+                    fixeds = db.recurringDao().listAll()
                 )
             )
             if (pushResp.code != 0) error(pushResp.message.ifEmpty { "推送失败" })
@@ -178,6 +179,12 @@ object SyncManager {
                 val local = db.budgetDao().get(r.id)
                 if (local == null || r.updatedAt > local.updatedAt) {
                     db.budgetDao().upsert(r)
+                }
+            }
+            for (r in data.fixeds) {
+                val local = db.recurringDao().get(r.id)
+                if (local == null || r.updatedAt > local.updatedAt) {
+                    db.recurringDao().upsert(r)   // 含远端软删墓碑（deleted 原样落库）
                 }
             }
 

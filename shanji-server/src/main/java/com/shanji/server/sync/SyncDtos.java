@@ -15,6 +15,7 @@ public class SyncDtos {
         private List<SyncEntities.TxRecord> txs;
         private List<SyncEntities.AccountRecord> accounts;
         private List<SyncEntities.BudgetRecord> budgets;
+        private List<SyncEntities.FixedRecord> fixeds;
     }
 
     @Data
@@ -33,5 +34,6 @@ public class SyncDtos {
         private List<SyncEntities.TxRecord> txs;
         private List<SyncEntities.AccountRecord> accounts;
         private List<SyncEntities.BudgetRecord> budgets;
+        private List<SyncEntities.FixedRecord> fixeds;
     }
 }

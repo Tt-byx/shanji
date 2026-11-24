@@ -10,14 +10,27 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface RecurringDao {
 
-    @Query("SELECT * FROM recurring WHERE deleted = 0 ORDER BY dayOfMonth ASC")
+    @Query("SELECT * FROM recurring WHERE deleted = 0 ORDER BY autoRecord DESC, dayOfMonth ASC")
     fun observeAll(): Flow<List<RecurringEntity>>
 
-    @Query("SELECT * FROM recurring WHERE deleted = 0 AND enabled = 1")
+    /** 自动记账的周期规则（订阅 autoRecord=0 不参与生成） */
+    @Query("SELECT * FROM recurring WHERE deleted = 0 AND enabled = 1 AND autoRecord = 1")
     suspend fun listEnabled(): List<RecurringEntity>
+
+    @Query("SELECT * FROM recurring WHERE deleted = 0 AND enabled = 1")
+    suspend fun listActive(): List<RecurringEntity>
+
+    @Query("SELECT * FROM recurring WHERE deleted = 0")
+    suspend fun listAll(): List<RecurringEntity>
+
+    @Query("SELECT * FROM recurring WHERE id = :id")
+    suspend fun get(id: String): RecurringEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(rule: RecurringEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(list: List<RecurringEntity>)
 
     @Update
     suspend fun update(rule: RecurringEntity)

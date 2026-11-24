@@ -2,6 +2,7 @@
 .screenshots/
 .trae/
 .workbuddy/
+.arts/
 
 # 安装包不入库（GitHub 不托管二进制产物）
 *.apk

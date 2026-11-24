@@ -103,6 +103,50 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
     var aiInsight by remember { mutableStateOf<String?>(null) }
     var aiLoading by remember { mutableStateOf(true) } // 首帧即骨架，避免规则文案闪现
     var insightTick by remember { mutableStateOf(0) }  // 「重新生成」自增打破缓存
+    // F22：洞察数字可点开溯源明细；#CARD# 操作按钮与 AI 对话同一套协议
+    var traceQuery by remember { mutableStateOf<Map<String, String>?>(null) }
+    val insightBody = remember(aiInsight) {
+        aiInsight?.let { it.substringBefore("\n#CARD#").substringBefore("#CARD#").trim() } ?: ""
+    }
+    val insightCard = remember(aiInsight) {
+        aiInsight?.let { text ->
+            val idx = text.indexOf("#CARD#")
+            if (idx < 0) null else runCatching {
+                kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                    .decodeFromString<com.shanji.app.data.net.AiCard>(text.substring(idx + 6).trim())
+            }.getOrNull()
+        }
+    }
+    /** 洞察卡按钮：与 AI 对话卡片同一分发逻辑（queryTx 弹明细 / budget_set / addTx 本地执行） */
+    fun insightBtn(btn: com.shanji.app.data.net.AiCardBtn) {
+        when (btn.fn) {
+            "queryTx" -> traceQuery = btn.params.mapValues { it.value.toString().trim('"') }
+            "budget_set" -> {
+                val amount = btn.params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
+                if (amount > 0) {
+                    val scopeName = btn.params["scope"]?.toString()?.trim('"') ?: "total"
+                    val cat = btn.params["category"]?.toString()?.trim('"') ?: ""
+                    AppStore.budgets.set(if (scopeName == "category") "category" else "total", cat, amount)
+                    val label = if (scopeName == "category") "${Categories.of(cat).label}预算" else "总预算"
+                    android.widget.Toast.makeText(
+                        ctx, "已设置${label} ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            "addTx" -> {
+                val amount = btn.params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
+                if (amount > 0) {
+                    com.shanji.app.data.newTx(
+                        btn.params["type"]?.toString()?.trim('"') ?: "expense",
+                        amount,
+                        btn.params["merchant"]?.toString()?.trim('"') ?: "",
+                        btn.params["category"]?.toString()?.trim('"') ?: "other"
+                    ).let { AppStore.store.add(it) }
+                    android.widget.Toast.makeText(ctx, "已记一笔 ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
     val persona = remember {
         ctx.getSharedPreferences("shanji_prefs", android.content.Context.MODE_PRIVATE)
             .getString("ai_persona", null)
@@ -123,8 +167,9 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
         }
         aiLoading = true
         val r = runCatching {
-            val stats = "本月支出¥${fmtAmount(summary.expense)}、收入¥${fmtAmount(summary.income)}；" +
-                cats.take(5).joinToString("、") { "${it.cat.label}¥${fmtAmount(it.amount)}" }
+            // 分类给 key(label) 两态 + 标明月份：洞察卡的 shanji-trace 链接要靠它拼 category/month（F22）
+            val stats = "月份=$ym；本月支出¥${fmtAmount(summary.expense)}、收入¥${fmtAmount(summary.income)}；" +
+                "分类：" + cats.take(5).joinToString("、") { "${it.cat.key}(${it.cat.label})¥${fmtAmount(it.amount)}" }
             com.shanji.app.data.AiClient.insight(ctx, "insight", insights, stats, persona)
         }
         r.getOrNull()?.let {
@@ -265,8 +310,43 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
                             val fade = remember(aiInsight) { androidx.compose.animation.core.Animatable(0f) }
                             androidx.compose.runtime.LaunchedEffect(aiInsight) { fade.animateTo(1f, tween(400)) }
                             Column(Modifier.alpha(fade.value)) {
-                                aiInsight!!.lines().filter { it.isNotBlank() }.forEach {
-                                    Text("· $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, lineHeight = 20.sp)
+                                // 正文走 Markdown：数字后的 shanji-trace 链接可点开明细（F22）
+                                MarkdownText(
+                                    insightBody,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onLink = { url ->
+                                        val params = url.substringAfter("shanji-trace:", "")
+                                            .split("&").mapNotNull { kv ->
+                                                val i = kv.indexOf('=')
+                                                if (i > 0) kv.substring(0, i) to kv.substring(i + 1) else null
+                                            }.toMap()
+                                        if (params.isNotEmpty()) traceQuery = params
+                                    }
+                                )
+                                // 操作卡片：标题/补充行/按钮（queryTx 查明细 · budget_set 设预算 · addTx 记一笔）
+                                insightCard?.let { card ->
+                                    if (card.title.isNotBlank()) {
+                                        Spacer(Modifier.height(8.dp))
+                                        Text(card.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, lineHeight = 19.sp)
+                                    }
+                                    card.lines.forEach {
+                                        Text("· $it", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+                                    }
+                                    if (card.buttons.isNotEmpty()) {
+                                        Spacer(Modifier.height(8.dp))
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            card.buttons.forEach { b ->
+                                                if (b.label.isBlank()) return@forEach
+                                                Text(
+                                                    b.label, fontSize = 12.sp, color = Primary,
+                                                    modifier = Modifier
+                                                        .background(PrimarySoft, RoundedCornerShape(999.dp))
+                                                        .clickable { insightBtn(b) }
+                                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -372,6 +452,9 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
         }
         Spacer(Modifier.height(8.dp))
     }
+
+    // 洞察数字溯源明细（F22 共享弹层；统计页只读，不带编辑入口）
+    TraceSheet(query = traceQuery, onDismiss = { traceQuery = null })
 }
 
 @Composable

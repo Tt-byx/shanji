@@ -113,6 +113,19 @@ public class AiService {
         }
     }
 
+    /** 抠 JSON 数组（订阅识别这类只回数组的场景） */
+    private JsonNode extractJsonArray(String text) {
+        String t = text.trim();
+        int s = t.indexOf('[');
+        int e = t.lastIndexOf(']');
+        if (s < 0 || e <= s) return null;
+        try {
+            return M.readTree(t.substring(s, e + 1));
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
     private static final String VISION_SYSTEM = """
         你是支付账单识别助手。从付款截图中提取信息，只返回一个 JSON 对象，格式：
         {"amount": 数字(支出金额，正数), "merchant": "商户或事项名称", "time": "yyyy-MM-dd HH:mm"(付款时间,未知则为 null)}
@@ -432,7 +445,23 @@ public class AiService {
         数字只能来自给定的 [事件]/[统计]，账本里没有的数字不得出现，禁止估算或编造。
         """;
 
+    /** 统计页洞察卡（F22）：允许溯源链接 + 末尾可选 #CARD# 操作卡片；通知类任务仍走上面的纯文本版 */
+    private static final String INSIGHT_CARD_SYSTEM = """
+        你是记账 App「闪记」的理财小助手，用户是大学生。
+        根据给定的规则命中事件和统计数据，生成简短人话洞察。
+        要求：一句话一个要点，最多 3 条，每条不超过 45 字，带具体数字，给一条可执行的小建议。禁止标题。
+        数字只能来自给定的 [事件]/[统计]，账本里没有的数字不得出现，禁止估算或编造。
+        引用 [统计] 里的分类金额时，在数字后面紧跟溯源链接（用户点击可查看对应账单明细）：
+        [¥{金额}](shanji-trace:category={分类key}&month={yyyy-MM})
+        month 用 [统计] 里给出的月份，category 用 [统计] 括号里的分类 key（如 dining）；[统计] 里没有的数字不要加链接。
+        最后可单独起一行输出一张操作卡片（没有合适按钮就整行省略，卡片必须放正文末尾）：
+        #CARD#{"title":"{带真实数字的结论}","lines":["{一条补充}"],"buttons":[{"label":"{按钮文字}","fn":"queryTx","params":{"category":"{分类key}","month":"{yyyy-MM}"}}]}
+        buttons 的 fn 只能是 queryTx / budget_set / addTx；params 只用 category/month/keyword/scope/amount；
+        卡片里的数字同样必须来自 [事件]/[统计]，占位符 {xxx} 必须替换成真实值，禁止照抄示例。
+        """;
+
     public AiDtos.InsightResult insight(AiDtos.InsightRequest req) {
+        boolean statCard = "insight".equals(req.kind());
         StringBuilder sb = new StringBuilder();
         if (req.persona() != null && req.persona().equals("savage")) {
             sb.append("语气：毒舌但善意。\n");
@@ -453,12 +482,65 @@ public class AiService {
         if (req.stats() != null && !req.stats().isBlank()) {
             sb.append("[统计]\n").append(req.stats()).append('\n');
         }
-        String out = chat(INSIGHT_SYSTEM, sb.toString(), 0.6);
+        String out = chat(statCard ? INSIGHT_CARD_SYSTEM : INSIGHT_SYSTEM, sb.toString(), 0.6);
         // 抽正文，去围栏和 HTML 实体换行
         String t = out;
         if (t.startsWith("```")) t = t.replaceAll("^```[a-z]*\\n?|\\n?```$", "").trim();
         t = t.replace("&#10;", "\n").replace("&amp;", "&").trim();
         if (t.isBlank()) throw new BizException(HttpStatus.BAD_GATEWAY, "AI 没回话，稍后再试");
-        return new AiDtos.InsightResult(t.length() > 500 ? t.substring(0, 500) : t);
+        // 洞察卡带链接和 #CARD# 行，给足余量；通知类仍是纯短文案
+        int limit = statCard ? 1500 : 500;
+        return new AiDtos.InsightResult(t.length() > limit ? t.substring(0, limit) : t);
+    }
+
+    private static final String SUBSCRIBE_SCAN_SYSTEM = """
+        你是记账 App「闪记」的订阅识别器。输入是用户近几个月的账单流水，每行格式：
+        yyyy-MM-dd|商户名|金额|分类key
+        识别「订阅 / 固定支出」：同一商户连续 3 个月以上每月都出现、且金额基本稳定的支出，
+        如视频会员、话费、云盘、健身卡、房租。
+        只输出一个 JSON 数组，不要解释、不要 markdown 围栏、不要代码块：
+        [{"name":"商户名","amount":月均金额(数字),"category":"分类key","cycle":"monthly","dayOfMonth":15,"dueMonth":0}]
+        规则：
+        - 不满足「连续每月出现且金额稳定」的不要输出；不确定的宁可不输出；没有就返回 []
+        - cycle 固定填 monthly；dayOfMonth 取最近一笔账单的日期几号（1~31）
+        - category 沿用账单行里的分类 key（dining/transport/shopping/daily/entertainment/health/education/other），不要改
+        - [已识别，跳过] 里列出的商户已存在，直接跳过
+        - 结果最多 30 条
+        """;
+
+    /** 订阅识别（F7）：语义判断交给 AI，客户端在调用失败时才降级本地规则 */
+    public AiDtos.SubscribeScanResult subscribeScan(AiDtos.SubscribeScanRequest req) {
+        String summary = req.txSummary() == null ? "" : req.txSummary().trim();
+        if (summary.isEmpty()) {
+            throw new BizException(HttpStatus.BAD_REQUEST, "没有可分析的账单");
+        }
+        if (summary.length() > 60_000) summary = summary.substring(0, 60_000);
+        StringBuilder sb = new StringBuilder("[账单流水]\n").append(summary).append('\n');
+        if (req.existing() != null && !req.existing().isEmpty()) {
+            sb.append("[已识别，跳过]\n").append(String.join("、", req.existing())).append('\n');
+        }
+        String out = chat(SUBSCRIBE_SCAN_SYSTEM, sb.toString(), 0.2);
+        JsonNode arr = extractJsonArray(out);
+        java.util.ArrayList<AiDtos.SubscribeScanItem> items = new java.util.ArrayList<>();
+        if (arr != null && arr.isArray()) {
+            java.util.Set<String> cats = java.util.Set.of(
+                "dining", "transport", "shopping", "daily", "entertainment", "health", "education", "other");
+            for (JsonNode n : arr) {
+                if (items.size() >= 30) break;
+                String name = n.path("name").asText("").trim();
+                double amount = n.path("amount").asDouble(0);
+                if (name.isEmpty() || name.length() > 30 || amount <= 0 || amount > 1_000_000) continue;
+                String cat = n.path("category").asText("other");
+                if (!cats.contains(cat)) cat = "other";
+                String cycle = n.path("cycle").asText("monthly");
+                if (!cycle.equals("yearly")) cycle = "monthly";
+                int day = n.path("dayOfMonth").asInt(1);
+                if (day < 1 || day > 31) day = 1;
+                int dueMonth = n.path("dueMonth").asInt(0);
+                if (dueMonth < 0 || dueMonth > 12) dueMonth = 0;
+                items.add(new AiDtos.SubscribeScanItem(name, amount, cat, cycle, day, dueMonth));
+            }
+        }
+        return new AiDtos.SubscribeScanResult(items);
     }
 }

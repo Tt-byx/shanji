@@ -82,3 +82,15 @@ val MIGRATION_4_5 = object : Migration(4, 5) {
         db.execSQL("CREATE INDEX IF NOT EXISTS `index_chat_messages_conversationId` ON `chat_messages` (`conversationId`)")
     }
 }
+
+/* DB 5 → 6：recurring 升级为「固定支出」单表（F8/F23）——
+ * 增加 周期/到期月份/是否自动记账/来源 列，存量周期规则默认 autoRecord=1；
+ * 订阅数据从 SharedPreferences 首次启动时导入（见 RecurringStore，属数据迁移非 schema） */
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `recurring` ADD COLUMN `cycle` TEXT NOT NULL DEFAULT 'monthly'")
+        db.execSQL("ALTER TABLE `recurring` ADD COLUMN `dueMonth` INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE `recurring` ADD COLUMN `autoRecord` INTEGER NOT NULL DEFAULT 1")
+        db.execSQL("ALTER TABLE `recurring` ADD COLUMN `source` TEXT NOT NULL DEFAULT 'manual'")
+    }
+}

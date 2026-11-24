@@ -84,4 +84,44 @@ public class SyncEntities {
 
         private int deleted;
     }
+
+    /** 固定支出（F8：订阅/周期规则进云同步；与客户端 recurring 表字段一一对应） */
+    @Entity(name = "FixedRecord")
+    @Table(name = "user_fixed")
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
+    public static class FixedRecord {
+        @Id
+        @Column(length = 36)
+        private String id;
+
+        @Column(name = "user_id", nullable = false)
+        private Long userId;
+
+        private String type;
+        private double amount;
+        private String merchant = "";
+        private String category = "";
+
+        @Column(name = "account_id")
+        private String accountId = "acc_cash";
+
+        @Column(name = "day_of_month")
+        private int dayOfMonth;
+
+        private int enabled;
+
+        @Column(name = "last_run_date")
+        private String lastRunDate = "";
+
+        private String cycle = "monthly";
+        private int dueMonth;
+        @Column(name = "auto_record")
+        private int autoRecord = 1;
+        private String source = "manual";
+
+        @Column(name = "updated_at")
+        private long updatedAt;
+
+        private int deleted;
+    }
 }

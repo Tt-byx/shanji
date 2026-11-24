@@ -40,4 +40,21 @@ public class AiDtos {
     public record VisionRequest(String image) {}
 
     public record VisionResult(Double amount, String merchant, String time) {}
+
+    /**
+     * 订阅识别（F7 真调 AI）：客户端送近几个月账单摘要（每行 yyyy-MM-dd|商户|金额|分类key），
+     * 服务端 AI 做语义判断，只认连续按月出现、金额稳定的固定支出。
+     */
+    public record SubscribeScanRequest(String txSummary, List<String> existing) {}
+
+    public record SubscribeScanItem(
+        String name,
+        double amount,
+        String category,
+        String cycle,      // monthly | yearly
+        int dayOfMonth,
+        int dueMonth       // yearly 1~12，monthly 为 0
+    ) {}
+
+    public record SubscribeScanResult(List<SubscribeScanItem> items) {}
 }

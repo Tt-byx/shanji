@@ -73,6 +73,29 @@ data class AiVisionData(
     val time: String? = null    // "yyyy-MM-dd HH:mm"，识别不出为 null
 )
 
+/* ---- AI 订阅识别（F7：真调 AI 语义判断，本地规则只作兜底） ---- */
+
+@Serializable
+data class SubscribeScanReq(
+    /** 近 N 个月账单摘要，每行：yyyy-MM-dd|商户|金额|分类key（服务端不存，只做本次判断） */
+    val txSummary: String,
+    /** 已有订阅/规则的商户名，识别结果里跳过 */
+    val existing: List<String> = emptyList()
+)
+
+@Serializable
+data class SubscribeScanItem(
+    val name: String = "",
+    val amount: Double = 0.0,
+    val category: String = "other",
+    val cycle: String = "monthly",   // monthly | yearly
+    val dayOfMonth: Int = 1,
+    val dueMonth: Int = 0            // yearly 1~12
+)
+
+@Serializable
+data class SubscribeScanData(val items: List<SubscribeScanItem> = emptyList())
+
 /* ---- AI 结构化卡片（#ACT# JSON 的 card 字段，随正文 #CARD# 行持久化） ---- */
 
 @Serializable
@@ -135,4 +158,11 @@ interface AiApi {
         @Header("Authorization") bearer: String?,
         @Body req: AiInsightReq
     ): ApiResponse<AiInsightData>
+
+    /** 订阅识别：客户端把账单摘要交给服务端 AI 判断（F7），失败由客户端本地规则兜底 */
+    @POST("api/ai/subscribe-scan")
+    suspend fun subscribeScan(
+        @Header("Authorization") bearer: String?,
+        @Body req: SubscribeScanReq
+    ): ApiResponse<SubscribeScanData>
 }

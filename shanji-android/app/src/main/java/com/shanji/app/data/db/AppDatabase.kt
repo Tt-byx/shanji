@@ -8,7 +8,7 @@ import androidx.room.RoomDatabase
 @Database(
     entities = [TxEntity::class, AccountEntity::class, BudgetEntity::class, RecurringEntity::class,
         ConversationEntity::class, ChatMessageEntity::class],
-    version = 5, exportSchema = true
+    version = 6, exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
 
@@ -30,7 +30,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "shanji.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build().also { instance = it }
             }
     }

@@ -2,6 +2,7 @@ package com.shanji.app.data.net
 
 import com.shanji.app.data.db.AccountEntity
 import com.shanji.app.data.db.BudgetEntity
+import com.shanji.app.data.db.RecurringEntity
 import com.shanji.app.data.db.TxEntity
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -39,7 +40,8 @@ data class AuthData(
 data class PushRequest(
     val txs: List<TxEntity> = emptyList(),
     val accounts: List<AccountEntity> = emptyList(),
-    val budgets: List<BudgetEntity> = emptyList()
+    val budgets: List<BudgetEntity> = emptyList(),
+    val fixeds: List<RecurringEntity> = emptyList()   // 固定支出（订阅+周期规则），F8 进云同步
 )
 
 @Serializable
@@ -53,7 +55,8 @@ data class PullData(
     val serverTime: Long = 0,
     val txs: List<TxEntity> = emptyList(),
     val accounts: List<AccountEntity> = emptyList(),
-    val budgets: List<BudgetEntity> = emptyList()
+    val budgets: List<BudgetEntity> = emptyList(),
+    val fixeds: List<RecurringEntity> = emptyList()
 )
 
 @Serializable

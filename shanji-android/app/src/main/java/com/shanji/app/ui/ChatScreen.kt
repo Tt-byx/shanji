@@ -549,12 +549,20 @@ fun ChatScreen(
         runFollowUp("已设置${label} ¥${fmtAmount(amount)}（月度循环）", cid)
     }
 
-    /** subscribe 动作：扫出近 3 个月以上每月都有的近似固定支出回传 AI（与订阅管理同一套识别） */
+    /** subscribe 动作：账单摘要交服务端 AI 判断订阅（F7），AI 不可用降级本地规则，结果回传 AI 出第二轮 */
     fun runSubscribeThenReply(cid: String) {
-        val text = com.shanji.app.data.SubscriptionDetector.summarize(
-            com.shanji.app.data.SubscriptionDetector.detect(AppStore.store.txs)
-        )
-        runFollowUp(text, cid)
+        scope.launch {
+            val scan = withContext(Dispatchers.IO) {
+                com.shanji.app.data.SubscriptionDetector.scan(
+                    ctx,
+                    AppStore.store.txs,
+                    AppStore.recurring.list.map { it.merchant },
+                    AppStore.accounts.defaultId()
+                )
+            }
+            val suffix = if (scan.usedAi) "" else "（AI 识别不可用，已改用本地规则）"
+            runFollowUp(com.shanji.app.data.SubscriptionDetector.summarize(scan.items) + suffix, cid)
+        }
     }
 
     /** 处理动作行（#ACT# 里的 actions）。cid = 动作所属会话（不依赖当前选中会话） */
@@ -1078,52 +1086,12 @@ fun ChatScreen(
         }
     }
 
-    // ===== 溯源明细：AI 数字/卡片按钮点开 → 底部弹层列出对应账单 =====
-    traceQuery?.let { q ->
-        BackHandler { traceQuery = null }
-        val month = q["month"] ?: ""
-        val cat = q["category"] ?: ""
-        val keyword = q["keyword"] ?: ""
-        val hits = remember(q) {
-            AppStore.store.txs.filter { t ->
-                val inMonth = month.isBlank() || java.time.YearMonth.from(
-                    java.time.Instant.ofEpochMilli(t.ts).atZone(java.time.ZoneId.systemDefault())
-                ).toString() == month
-                val inCat = cat.isBlank() || t.category == cat
-                val inKw = keyword.isBlank() ||
-                    t.merchant.contains(keyword) || t.note.contains(keyword)
-                inMonth && inCat && inKw
-            }.sortedByDescending { it.ts }
-        }
-        ModalBottomSheet(
-            onDismissRequest = { traceQuery = null },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ) {
-            val total = hits.filter { it.type == "expense" }.sumOf { it.amount }
-            Column(Modifier.padding(bottom = 24.dp)) {
-                Text(
-                    "AI 提到的账单 · ${hits.size} 笔 · 支出合计 ¥${fmtAmount(total)}",
-                    fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                )
-                if (hits.isEmpty()) {
-                    Text(
-                        "没有匹配的账单",
-                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
-                    )
-                }
-                LazyColumn(Modifier.heightIn(max = 420.dp)) {
-                    items(hits.size) { i ->
-                        TxRow(hits[i], onClick = {
-                            traceQuery = null
-                            onEditTx(hits[i].id)
-                        })
-                    }
-                }
-            }
-        }
-    }
+    // ===== 溯源明细：AI 数字/卡片按钮点开 → 底部弹层列出对应账单（共享件，与统计页同一实现）=====
+    TraceSheet(
+        query = traceQuery,
+        onDismiss = { traceQuery = null },
+        onEdit = { id -> onEditTx(id) }
+    )
 
     // 重命名
     if (renameTarget != null) {

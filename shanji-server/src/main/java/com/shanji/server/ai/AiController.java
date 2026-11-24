@@ -128,6 +128,12 @@ public class AiController {
         return ApiResponse.ok(aiService.insight(req));
     }
 
+    /** 订阅识别（F7）：账单摘要 → AI 语义判断固定支出，客户端失败时才降级本地规则 */
+    @PostMapping("/subscribe-scan")
+    public ApiResponse<AiDtos.SubscribeScanResult> subscribeScan(@RequestBody AiDtos.SubscribeScanRequest req) {
+        return ApiResponse.ok(aiService.subscribeScan(req));
+    }
+
     private void write(java.io.OutputStream out, String s) throws java.io.IOException {
         out.write(s.getBytes(StandardCharsets.UTF_8));
     }

@@ -17,6 +17,7 @@ public class SyncService {
     private final TxRepo txRepo;
     private final AccountRepo accountRepo;
     private final BudgetRepo budgetRepo;
+    private final FixedRepo fixedRepo;
 
     @Transactional
     public SyncDtos.PushResponse push(Long userId, SyncDtos.PushRequest req) {
@@ -45,6 +46,14 @@ public class SyncService {
                 accepted++;
             }
         }
+        if (req.getFixeds() != null) {
+            for (var incoming : req.getFixeds()) {
+                if (merge(fixedRepo.findById(incoming.getId()).orElse(null), incoming.getUpdatedAt())) continue;
+                incoming.setUserId(userId);
+                fixedRepo.save(incoming);
+                accepted++;
+            }
+        }
         return new SyncDtos.PushResponse(System.currentTimeMillis(), accepted);
     }
 
@@ -59,6 +68,7 @@ public class SyncService {
         if (record instanceof SyncEntities.TxRecord r) return r.getUpdatedAt();
         if (record instanceof SyncEntities.AccountRecord r) return r.getUpdatedAt();
         if (record instanceof SyncEntities.BudgetRecord r) return r.getUpdatedAt();
+        if (record instanceof SyncEntities.FixedRecord r) return r.getUpdatedAt();
         return 0;
     }
 
@@ -68,7 +78,8 @@ public class SyncService {
             System.currentTimeMillis(),
             txRepo.findSince(userId, since),
             accountRepo.findSince(userId, since),
-            budgetRepo.findSince(userId, since)
+            budgetRepo.findSince(userId, since),
+            fixedRepo.findSince(userId, since)
         );
     }
 }

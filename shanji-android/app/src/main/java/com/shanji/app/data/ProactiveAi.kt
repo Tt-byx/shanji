@@ -226,7 +226,7 @@ object ProactiveAi {
         }
 
         // 4) 订阅明天/今天扣款 → 提醒
-        AppStore.subscriptions.dueWithin(1).forEach { (sub, date) ->
+        AppStore.recurring.dueWithin(1).forEach { (sub, date) ->
             val marker = date.toString()
             val key = "due_${sub.id}"
             if (p.getString(key, "") == marker) return@forEach
@@ -234,8 +234,8 @@ object ProactiveAi {
             // 通知 id 用订阅名 hash（稳定且与分类号段隔离），不用会碰撞的 id hash
             val ok = notify(
                 context,
-                ID_DUE_BASE + (sub.name.hashCode().and(0x3ff)),
-                "「${sub.name}」${whenText}扣款 ¥${fmtAmount(sub.amount)}",
+                ID_DUE_BASE + (sub.merchant.hashCode().and(0x3ff)),
+                "「${sub.merchant}」${whenText}扣款 ¥${fmtAmount(sub.amount)}",
                 "每月${sub.dayOfMonth}号 · ${Categories.of(sub.category).label} · 上次识别约¥${fmtAmount(sub.amount)}/月"
             )
             if (ok) p.edit().putString(key, marker).apply()

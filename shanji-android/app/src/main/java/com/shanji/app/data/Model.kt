@@ -158,6 +158,13 @@ class TxStore(context: Context) {
         }
         AppStore.notifyChanged()
     }
+
+    /** 导入（CSV 等）：只新增不存在的行，不覆盖已有账单 */
+    fun addAll(list: List<Tx>) {
+        if (list.isEmpty()) return
+        scope.launch { dao.insertAll(list.map { it.toEntity() }) }
+        AppStore.notifyChanged()
+    }
     fun exportJson(): String = json.encodeToString(txs.toList())
 
     /** 演示数据：近 42 天，每天 1~3 笔，固定种子可复现；并标记已初始化 */
@@ -215,8 +222,6 @@ object AppStore {
         private set
     lateinit var recurring: RecurringStore
         private set
-    lateinit var subscriptions: SubscriptionStore
-        private set
     private lateinit var appContext: android.content.Context
 
     /** 账单数据版本：txs 每次从 Room 刷新 +1，统计页 remember(它) 避免无关重组重算 */
@@ -233,9 +238,6 @@ object AppStore {
             Thread {
                 runCatching { RecurringScheduler.checkAndRun(store, accounts, recurring) }
             }.start()
-        }
-        if (!this::subscriptions.isInitialized) {
-            subscriptions = SubscriptionStore(context.applicationContext)
         }
         // 主动式 AI 推送：每次启动重排闹钟（周报/超支/到期），关掉 App 也会按时弹
         runCatching { ProactiveAi.schedule(appContext) }

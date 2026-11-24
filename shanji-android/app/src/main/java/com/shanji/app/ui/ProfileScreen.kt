@@ -71,6 +71,7 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
     var authVersion by remember { mutableStateOf(0) }
 
     var pendingImport by remember { mutableStateOf<List<Tx>?>(null) }
+    var pendingCsv by remember { mutableStateOf<Pair<Int, List<Tx>>?>(null) }   // CSV 导入：总行数 to 新账单
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -109,6 +110,29 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 BackupManager.parseJson(text)
             }.onSuccess { list -> pendingImport = list }
                 .onFailure { android.widget.Toast.makeText(context, "备份文件解析失败", android.widget.Toast.LENGTH_SHORT).show() }
+        }
+    }
+
+    // CSV 导入（补齐 导出→导入 闭环）：按 ID 去重，只新增不覆盖
+    val csvImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                val text = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                    ?: error("读取失败")
+                BackupManager.parseCsv(text)
+            }.onSuccess { list ->
+                val existing = txs.mapTo(HashSet()) { it.id }
+                val fresh = list.filter { it.id !in existing }
+                if (list.isEmpty()) {
+                    android.widget.Toast.makeText(context, "没读到账单，检查是不是闪记导出的 CSV", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    pendingCsv = list.size to fresh
+                }
+            }.onFailure {
+                android.widget.Toast.makeText(context, "CSV 解析失败，检查文件格式", android.widget.Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -207,7 +231,7 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("预算设置") { showBudget = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("周期记账") { onRecurring() }
+                MenuItem("固定支出（周期/订阅）") { onRecurring() }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("AI 助手") { showAiSettings = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
@@ -221,6 +245,12 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("导出表格 (CSV)") {
                     csvLauncher.launch("闪记账单_" + java.time.LocalDate.now() + ".csv")
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.background)
+                MenuItem("导入表格 (CSV)") {
+                    csvImportLauncher.launch(
+                        arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*")
+                    )
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("恢复备份") {
@@ -342,6 +372,28 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
             dismissButton = { TextButton(onClick = { pendingImport = null }) { Text("取消") } }
         )
     }
+    pendingCsv?.let { (total, fresh) ->
+        AlertDialog(
+            onDismissRequest = { pendingCsv = null },
+            title = { Text("导入 CSV") },
+            text = {
+                val dup = total - fresh.size
+                Text(
+                    if (fresh.isEmpty()) "表格里 $total 笔账单都已存在（按 ID 去重），没有新账单可导入。"
+                    else "表格含 $total 笔账单，其中 ${fresh.size} 笔是新的。" +
+                        "按 ID 去重，已有的 $dup 笔不会重复导入，也不会覆盖现有账单。"
+                )
+            },
+            confirmButton = {
+                TextButton(enabled = fresh.isNotEmpty(), onClick = {
+                    AppStore.store.addAll(fresh)
+                    pendingCsv = null
+                    android.widget.Toast.makeText(context, "已导入 ${fresh.size} 笔账单", android.widget.Toast.LENGTH_SHORT).show()
+                }) { Text("导入") }
+            },
+            dismissButton = { TextButton(onClick = { pendingCsv = null }) { Text("取消") } }
+        )
+    }
 }
 
 @Composable
@@ -418,6 +470,11 @@ private fun AiSettingsDialog(onDismiss: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
+                // AI 使用统计（本月调用/失败次数，AiClient 全入口计数）
+                val (aiTotal, aiFail) = com.shanji.app.data.AiUsage.current(context)
+                Text("本月 AI 调用 $aiTotal 次" + (if (aiFail > 0) " · 失败 $aiFail 次" else ""),
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
                 Text(
                     "对话、统计洞察、月报均由服务器 AI 生成，无需任何配置。",
                     fontSize = 12.sp, lineHeight = 17.sp,

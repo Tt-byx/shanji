@@ -69,8 +69,15 @@ object ChatStreamManager {
         val app = context.applicationContext
         val resp = runCatching {
             ApiFactory.ai(app).startTask(bearer(app), req)
-        }.getOrElse { throw Exception(SyncManager.friendlyError(it)) }
-        if (resp.code != 0 || resp.data == null) error(resp.message.ifEmpty { "发起对话失败" })
+        }.getOrElse {
+            AiUsage.record(app, false)
+            throw Exception(SyncManager.friendlyError(it))
+        }
+        if (resp.code != 0 || resp.data == null) {
+            AiUsage.record(app, false)
+            error(resp.message.ifEmpty { "发起对话失败" })
+        }
+        AiUsage.record(app, true)
         val id = resp.data
         android.util.Log.d("SHANJI", "stream start id=${id.take(8)} conv=${conversationId.take(6)}")
         pruneFinished()
