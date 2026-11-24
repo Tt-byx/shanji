@@ -1,21 +1,33 @@
 package com.shanji.app.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,11 +36,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Add
@@ -37,15 +52,18 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,8 +73,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,6 +94,7 @@ import com.shanji.app.data.net.AiAction
 import com.shanji.app.data.net.AiChatMsg
 import com.shanji.app.data.net.AiChatReq
 import com.shanji.app.ui.theme.Primary
+import com.shanji.app.ui.theme.PrimaryDeep
 import com.shanji.app.ui.theme.Red
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -90,6 +116,198 @@ private fun cleanText(s: String): String =
 /** [系统] 开头是查账回传的内部消息：只进 AI 上下文，不上屏 */
 private fun visible(msgs: List<com.shanji.app.data.db.ChatMessageEntity>): List<com.shanji.app.data.db.ChatMessageEntity> =
     msgs.filterNot { it.role == "user" && it.content.startsWith("[系统]") }
+
+// ===== 流式段落批次揭示：安全切割点（绝不腰斩代码块/表格）=====
+
+private const val REVEAL_MIN = 120 // 批次最小字符数（避免碎批；短回复由流结束 flush 兜底）
+private val RE_HEAD = Regex("""^#{1,6}\s+.*$""")
+private val RE_BULLET = Regex("""^[-*+]\s+.*$""")
+private val RE_ORDERED = Regex("""^\d+[.)]\s+.*$""")
+
+private fun lineStartAt(text: String, pos: Int): Int =
+    if (pos <= 0) 0 else text.lastIndexOf('\n', pos - 1) + 1
+
+/** [pos] 所在位置是否处于未闭合的 ``` 围栏内（按行首围栏标记计数） */
+private fun fenceOpenAt(text: String, pos: Int): Boolean {
+    var depth = 0
+    var p = 0
+    val limit = lineStartAt(text, pos)
+    while (p < limit) {
+        val e = text.indexOf('\n', p).let { if (it == -1 || it > limit) limit else it }
+        if (text.substring(p, e).trimStart().startsWith("```")) depth++
+        if (e >= limit) break
+        p = e + 1
+    }
+    return depth % 2 == 1
+}
+
+/** 行类型（空行0/围栏1/标题2/分割线3/引用4/无序5/有序6/表格7/段落8） */
+private fun lineKind(t: String): Int = when {
+    t.isEmpty() -> 0
+    t.startsWith("```") -> 1
+    t.startsWith("|") -> 7
+    t.startsWith(">") -> 4
+    RE_BULLET.matches(t) -> 5
+    RE_ORDERED.matches(t) -> 6
+    RE_HEAD.matches(t) -> 2
+    t == "---" || t == "***" || t == "___" -> 3
+    else -> 8
+}
+
+/** cur 行是否相对 prev 行开启新解析块（同类延续的列表/引用/表格/段落不切） */
+private fun isBlockBoundary(prev: Int, cur: Int): Boolean {
+    if (cur == 0 || prev < 0) return false
+    if (prev == 0) return true // 空行后 → 新块
+    if (prev == cur && cur in intArrayOf(4, 5, 6, 7, 8)) return false
+    return true
+}
+
+/** 句末位置：返回 [from,end) 内第一个句末标点（含后随右引号）之后的下标；无 → -1 */
+private fun sentenceEndIn(text: String, from: Int, end: Int): Int {
+    var i = from
+    while (i < end) {
+        val c = text[i]
+        val cjk = c == '。' || c == '！' || c == '？' || c == '…' || c == '‼'
+        val ascii = c == '.' || c == '!' || c == '?'
+        if (cjk || ascii) {
+            if (ascii) {
+                val nx = if (i + 1 < end) text[i + 1] else '\n'
+                if (!nx.isWhitespace() && nx != '"' && nx != '\'' && nx != '”' && nx != '’') { i++; continue }
+            }
+            var j = i + 1
+            while (j < end && (text[j] == '"' || text[j] == '\'' || text[j] == '”' || text[j] == '’' ||
+                        text[j] == '）' || text[j] == ')' || text[j] == '』' || text[j] == '」')) j++
+            return j
+        }
+        i++
+    }
+    return -1
+}
+
+/** 句末切割的行内构造平衡检查：不切开 `code`、**bold**、[link](...) */
+private fun inlineBalanced(text: String, from: Int, cut: Int): Boolean {
+    if (cut <= from) return true
+    val seg = text.substring(from, cut)
+    if (seg.count { it == '`' } % 2 != 0) return false
+    if (seg.count { it == '*' } % 2 != 0) return false
+    if (seg.split("**").size % 2 == 0) return false // "**" 出现奇数次
+    val lb = seg.lastIndexOf('[')
+    if (lb >= 0) {
+        val close = seg.indexOf(']', lb)
+        if (close < 0) return false           // [ 未闭合
+        if (close == seg.length - 1 || seg[close + 1] != '(') return false // ] 后无 ( → 链接跨切点
+        if (seg.indexOf(')', close) < 0) return false // (url 未闭合
+    }
+    return true
+}
+
+/**
+ * 流式批次切割点：从 [from]（行首或句末）起找第一个安全边界。
+ * 规则：绝不切开 ``` 围栏与表格（整块揭示）；优先块边界（空行/构造行），句末兜底；
+ * 批次不小于 [REVEAL_MIN]；流结束时无边界则 flush 全量。null = 暂无边界（继续攒批）。
+ */
+private fun nextRevealCut(text: String, from: Int, streamDone: Boolean): Int? {
+    val n = text.length
+    if (from >= n) return null
+    fun eol(p: Int): Int { val i = text.indexOf('\n', p); return if (i == -1) n else i }
+
+    // A. 围栏内 → 只等闭合行（闭合后跳过尾随空行切到内容行首）
+    if (fenceOpenAt(text, from)) {
+        var p = lineStartAt(text, from)
+        while (p < n) {
+            val e = eol(p)
+            if (text.substring(p, e).trimStart().startsWith("```")) {
+                var q = e + 1
+                while (q < n && text.substring(q, eol(q)).trim().isEmpty()) q = eol(q) + 1
+                return if (q > from && q < n) q else if (streamDone) n else null
+            }
+            p = e + 1
+        }
+        return if (streamDone) n else null
+    }
+
+    // B. 表格行中 → 等表格结束（跳到表格外第一个内容行）
+    val lsFrom = lineStartAt(text, from)
+    if (text.substring(lsFrom, eol(lsFrom)).trimStart().startsWith("|")) {
+        var p = lsFrom
+        while (p < n && text.substring(p, eol(p)).trimStart().startsWith("|")) p = eol(p) + 1
+        val q = run {
+            var i = p
+            while (i < n && text.substring(i, eol(i)).trim().isEmpty()) i = eol(i) + 1
+            i
+        }
+        return if (q > from && q < n) q else if (streamDone) n else null
+    }
+
+    // C. 逐行扫描：围栏/表格整块跳过；块边界优先，句末兜底
+    var fromLs = lsFrom
+    var fence = fenceOpenAt(text, fromLs)
+    if (text.substring(fromLs, eol(fromLs)).trimStart().startsWith("```")) fence = !fence
+    var prevKind = lineKind(text.substring(fromLs, eol(fromLs)).trim())
+    var blockCut = -1
+    var sentCut = -1
+
+    // from 所在行剩余部分的句末（仅普通段落行）
+    val fe = eol(fromLs)
+    if (prevKind == 8 && fe > from) {
+        val s0 = sentenceEndIn(text, from, fe)
+        if (s0 in (from + REVEAL_MIN)..fe && inlineBalanced(text, from, s0)) sentCut = s0
+    }
+
+    var p = fe + 1
+    while (p < n && (blockCut < 0 || sentCut < 0)) {
+        val e = eol(p)
+        val t = text.substring(p, e).trim()
+        val kind = lineKind(t)
+
+        if (fence) {
+            if (kind == 1) { fence = false; prevKind = 1 }
+            p = e + 1
+            continue
+        }
+        if (kind == 1) { // 围栏开栏行：其行首是安全边界（代码块整体留给下一批）
+            if (p > from && blockCut < 0 && isBlockBoundary(prevKind, kind) && p - from >= REVEAL_MIN) {
+                blockCut = p
+                if (blockCut - from <= 400) return blockCut
+            }
+            fence = true
+            prevKind = kind
+            p = e + 1
+            continue
+        }
+        if (kind == 7) { // 表格块：跳到表格外
+            var q = p
+            while (q < n && text.substring(q, eol(q)).trimStart().startsWith("|")) q = eol(q) + 1
+            if (q >= n) { p = n; continue }
+            if (q > from && blockCut < 0 && isBlockBoundary(prevKind, 7) && q - from >= REVEAL_MIN) {
+                blockCut = q
+                if (blockCut - from <= 400) return blockCut
+            }
+            p = q
+            prevKind = 7
+            continue
+        }
+
+        // 普通/标题/列表/引用/分割线行
+        if (p > from && blockCut < 0 && kind != 0 && isBlockBoundary(prevKind, kind) && p - from >= REVEAL_MIN) {
+            blockCut = p
+            if (blockCut - from <= 400) return blockCut
+        }
+        // 句末候选（仅段落行）
+        if (kind == 8 && sentCut < 0) {
+            val scanFrom = maxOf(p, from)
+            val s = sentenceEndIn(text, scanFrom, e)
+            if (s >= 0 && s - from >= REVEAL_MIN && inlineBalanced(text, from, s)) sentCut = s
+        }
+        prevKind = kind
+        p = e + 1
+    }
+
+    if (blockCut >= 0 && blockCut - from <= 400) return blockCut
+    if (sentCut >= 0) return sentCut
+    if (blockCut >= 0) return blockCut
+    return if (streamDone) n else null
+}
 
 /** 滚到底（即时）：先等 items 变更完成布局，再定位末项并把高于视口的底边补进来 */
 private suspend fun LazyListState.scrollToBottom() {
@@ -125,6 +343,7 @@ private suspend fun LazyListState.animateScrollToBottom() {
  * 后台流式（ChatStreamManager 全局管理，切会话/最小化不断流）+ 本地记忆 + 会话管理，
  * 吸底滚动（贴底跟随、用户上翻不打断、「回到底部」悬浮按钮）。
  */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     onAddTx: (amount: Double, merchant: String, category: String, type: String) -> Unit
@@ -135,22 +354,42 @@ fun ChatScreen(
     var convId by remember { mutableStateOf<String?>(null) }
     var input by remember { mutableStateOf("") }
     var startPending by remember { mutableStateOf(false) } // POST /chat/task 进行中
-    var showHistory by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }   // 历史抽屉：挂载标志（含退场动画期）
+    var drawerOpen by remember { mutableStateOf(false) }    // 抽屉动画目标态
     var conversations by remember { mutableStateOf<List<com.shanji.app.data.db.ConversationEntity>>(emptyList()) }
     var renameTarget by remember { mutableStateOf<com.shanji.app.data.db.ConversationEntity?>(null) }
     var renameText by remember { mutableStateOf("") }
+    // 长按气泡 → 底部操作表（复制 / 删除）
+    var sheetTarget by remember { mutableStateOf<ChatItem?>(null) }
+    val haptics = LocalHapticFeedback.current
+    val clipboard = LocalClipboardManager.current
+    // reduced-motion：开发者选项「动画时长缩放=关闭」≈ 系统级减弱动态效果
+    val reducedMotion = remember(ctx) {
+        runCatching {
+            android.provider.Settings.Global.getFloat(
+                ctx.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f
+            ) == 0f || android.provider.Settings.Global.getFloat(
+                ctx.contentResolver, android.provider.Settings.Global.TRANSITION_ANIMATION_SCALE, 1f
+            ) == 0f
+        }.getOrDefault(false)
+    }
     val persona = remember {
         ctx.getSharedPreferences("shanji_prefs", android.content.Context.MODE_PRIVATE)
             .getString("ai_persona", null)
     }
     val listState = rememberLazyListState()
-    // 流式显示进度：bubbleId → 已流出的字符数（Agent 式逐字流出的本地节拍进度）。
+    // 流式段落批次揭示：bubbleId → 批次切割点列表（各批文本互不合并，旧批永不重排 → 零跳动）。
     // 放在页面级（而非气泡内 remember），滚动/重组导致 item 重建也不丢进度。
-    val typedChars = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>() }
+    val batchCuts = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, List<Int>>() }
+    // 已定稿批次数（淡入完成）；最后一段 [settled, cuts.size) 为淡入中
+    val batchSettled = remember { androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>() }
+    // 已删除消息 id：防止流快照把长按删除的消息重新加回列表
+    val deletedIds = remember { mutableSetOf<String>() }
 
     // ===== 吸底滚动状态（规则1：贴底判定 = 末项底边距视口底边 ≤ 阈值）=====
     val density = LocalDensity.current
     val bottomThresholdPx = with(density) { 72.dp.toPx() } // 规则建议 50~80px
+    val dragThresholdPx = with(density) { 48.dp.toPx() }   // 抽屉手势阈值（48dp）
     var isAtBottom by remember { mutableStateOf(true) }
 
     // 快照订阅（规则2：流管理器与视图解耦，UI 只是订阅者之一）
@@ -269,12 +508,39 @@ fun ChatScreen(
         }
     }
 
+    // ===== 历史抽屉（覆盖层，left/right 位移，禁 transform）=====
+    var drawerJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+
+    /** 打开抽屉：先加载会话列表；挂载后下一帧再翻目标态产生滑入动画 */
+    fun openDrawer() {
+        drawerJob?.cancel()
+        drawerJob = scope.launch {
+            conversations = withContext(Dispatchers.IO) { ChatStore.list(ctx) }
+            showHistory = true
+            delay(32) // 等首帧以 -width 初始位挂载
+            drawerOpen = true
+        }
+    }
+
+    /** 关闭抽屉：先滑出，动画结束再卸载（与 openDrawer 互斥，防止半开半关竞态） */
+    fun closeDrawer() {
+        drawerJob?.cancel()
+        drawerJob = scope.launch {
+            drawerOpen = false
+            delay(320)
+            showHistory = false
+        }
+    }
+
     /** 切换会话：只改 convId，加载与订阅由 LaunchedEffect(convId) 统一处理 */
     fun openConversation(id: String) {
-        if (id == convId) { showHistory = false; return }
+        if (id == convId) { closeDrawer(); return }
         convId = id
-        showHistory = false
+        closeDrawer()
     }
+
+    // 返回键：先关抽屉（重命名对话框是独立窗口，系统返回先关它），绝不直接退出 App
+    BackHandler(enabled = showHistory) { closeDrawer() }
 
     fun send() {
         val q = input.trim()
@@ -283,9 +549,12 @@ fun ChatScreen(
         input = ""; startPending = true
         android.util.Log.d("SHANJI", "send: 发送 q=${q.take(30)}")
         items.add(ChatItem("u${System.nanoTime()}", "user", q))
-        // 规则5：用户发送 → 强制平滑滚到底（即使此前在上面翻历史）
+        // 规则5：用户发送 → 强制滚到底（即使此前在上面翻历史）；reduced-motion 跳过平滑
         isAtBottom = true
-        scope.launch { listState.animateScrollToBottom() }
+        scope.launch {
+            if (reducedMotion) listState.scrollToBottom()
+            else listState.animateScrollToBottom()
+        }
         scope.launch {
             withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "user", q) }
             android.util.Log.d("SHANJI", "send: user 已入库")
@@ -317,7 +586,8 @@ fun ChatScreen(
     // ===== 会话加载 + 订阅该会话的流（规则3：切走即取消订阅，管理器连接与缓冲继续）=====
     LaunchedEffect(convId) {
         val cid = convId ?: return@LaunchedEffect
-        typedChars.clear() // 新会话：流式进度清零（历史消息按全文初始化，不重播）
+        batchCuts.clear()   // 新会话：批次揭示进度清零（历史消息按全文初始化，不重播）
+        batchSettled.clear()
         val msgs = withContext(Dispatchers.IO) { ChatStore.messages(ctx, cid) }
         android.util.Log.d(
             "SHANJI",
@@ -342,6 +612,7 @@ fun ChatScreen(
         ChatStreamManager.snapshots.collect { map ->
             val tasks = map.values.filter { it.conversationId == cid }.sortedBy { it.order }
             for (t in tasks) {
+                if (t.messageId in deletedIds) continue // 已长按删除：不再回加
                 val streaming = t.status == ChatStreamManager.Status.STREAMING
                 val text = cleanText(t.text)
                 val idx = items.indexOfFirst { it.id == t.messageId }
@@ -374,6 +645,15 @@ fun ChatScreen(
         Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .imePadding() // 键盘弹出时输入框顶到键盘上方
+            // 右滑打开历史抽屉（抽屉挂载时其遮罩在上层，本 Column 不在命中路径，不会误触发）
+            .pointerInput(Unit) {
+                var totalDx = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { totalDx = 0f },
+                    onDragEnd = { if (totalDx > dragThresholdPx) openDrawer() },
+                    onHorizontalDrag = { _, d -> totalDx += d }
+                )
+            }
     ) {
         // 页头：与其它 tab 一致的大标题 + 历史/新对话
         Row(
@@ -382,12 +662,7 @@ fun ChatScreen(
         ) {
             Text("问账本", fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = {
-                scope.launch {
-                    conversations = withContext(Dispatchers.IO) { ChatStore.list(ctx) }
-                    showHistory = true
-                }
-            }) {
+            IconButton(onClick = { openDrawer() }) {
                 Icon(Icons.Filled.History, "历史对话", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = {
@@ -430,7 +705,8 @@ fun ChatScreen(
                                 .padding(vertical = 6.dp)
                                 .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
                                 .clickable { input = q; send() }
-                                .padding(horizontal = 16.dp, vertical = 13.dp)
+                                // 14sp 文本 + 上下 15dp ≈ 49dp ≥ 48dp 触摸目标
+                                .padding(horizontal = 16.dp, vertical = 15.dp)
                         )
                     }
                 }
@@ -441,7 +717,18 @@ fun ChatScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(items, key = { it.id }) { m -> ChatBubble(m, typedChars) }
+                    items(items, key = { it.id }) { m ->
+                        ChatBubble(
+                            m = m,
+                            batchCuts = batchCuts,
+                            batchSettled = batchSettled,
+                            reducedMotion = reducedMotion,
+                            onLongPress = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                sheetTarget = m
+                            }
+                        )
+                    }
                     if (busy && items.lastOrNull()?.text?.isEmpty() != true) {
                         item {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -466,12 +753,16 @@ fun ChatScreen(
                         .clickable {
                             isAtBottom = true
                             scope.launch {
-                                listState.animateScrollToBottom()
+                                // reduced-motion：跳过滚动平滑，直接定位到底部
+                                if (reducedMotion) listState.scrollToBottom()
+                                else listState.animateScrollToBottom()
                             }
                         }
                 ) {
                     Row(
-                        Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+                        Modifier
+                            .defaultMinSize(minHeight = 48.dp) // 触摸目标 ≥48dp
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(Icons.Filled.ArrowDownward, null, tint = Primary, modifier = Modifier.size(16.dp))
@@ -493,6 +784,8 @@ fun ChatScreen(
                 placeholder = { Text("问点什么，或说「记一笔打车 20」") },
                 singleLine = true,
                 enabled = !busy,
+                // 输入字体必须 16sp：低于 16px 时 iOS/WebView 聚焦会自动放大且不回退
+                textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
                 shape = RoundedCornerShape(999.dp),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = Primary,
@@ -507,7 +800,7 @@ fun ChatScreen(
                 onClick = { send() },
                 enabled = canSend,
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(48.dp) // Android 触摸目标 ≥48dp
                     .background(
                         if (canSend) Primary else MaterialTheme.colorScheme.surfaceVariant,
                         RoundedCornerShape(999.dp)
@@ -522,60 +815,134 @@ fun ChatScreen(
         }
     }
 
-    // 历史会话列表
+    // ===== 历史抽屉：覆盖层滑入（left/right 位移，禁 transform；宽 = 80vw 动态上限）=====
     if (showHistory) {
-        AlertDialog(
-            onDismissRequest = { showHistory = false },
-            title = { Text("历史对话") },
-            text = {
-                Column(Modifier.height(320.dp).verticalScroll(rememberScrollState())) {
-                    if (conversations.isEmpty()) {
-                        Text("还没有对话", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        val drawerWidth = with(LocalConfiguration.current) { screenWidthDp.dp * 0.8f }
+        val offsetX by animateDpAsState(
+            if (drawerOpen) 0.dp else -drawerWidth,
+            if (reducedMotion) snap() else tween(280)
+        )
+        val scrimAlpha by animateFloatAsState(
+            if (drawerOpen) 0.4f else 0f,
+            if (reducedMotion) snap() else tween(280)
+        )
+        Box(
+            Modifier.fillMaxSize()
+                // 左滑关闭（遮罩层统一手势）
+                .pointerInput(Unit) {
+                    var totalDx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDx = 0f },
+                        onDragEnd = { if (totalDx < -dragThresholdPx) closeDrawer() },
+                        onHorizontalDrag = { _, d -> totalDx += d }
+                    )
+                }
+        ) {
+            // 遮罩：点按关闭
+            Box(
+                Modifier.fillMaxSize()
+                    .background(Color.Black.copy(alpha = scrimAlpha))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { closeDrawer() }
+            )
+            // 抽屉面板：Modifier.offset 是布局位移（left/right），非 transform
+            Column(
+                Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = offsetX)
+                    .fillMaxHeight()
+                    .fillMaxWidth(0.8f)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("历史对话", fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { closeDrawer() }) {
+                        Icon(Icons.Filled.Close, "关闭", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    conversations.forEach { c ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                }
+                if (conversations.isEmpty()) {
+                    Text(
+                        "还没有对话", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                    )
+                }
+                conversations.forEach { c ->
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            Modifier.weight(1f)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .clickable { openConversation(c.id) }
+                                .padding(vertical = 4.dp),
+                            verticalArrangement = Arrangement.Center
                         ) {
-                            Column(
-                                Modifier.weight(1f).clickable {
-                                    showHistory = false
-                                    openConversation(c.id)
+                            Text(c.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                            Text(
+                                java.time.Instant.ofEpochMilli(c.updatedAt)
+                                    .atZone(java.time.ZoneId.systemDefault())
+                                    .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")),
+                                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = {
+                            renameTarget = c; renameText = c.title
+                        }) {
+                            Text("改名", fontSize = 12.sp, color = Primary)
+                        }
+                        IconButton(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { ChatStore.delete(ctx, c.id) }
+                                conversations = withContext(Dispatchers.IO) { ChatStore.list(ctx) }
+                                if (c.id == convId) {
+                                    val next = withContext(Dispatchers.IO) { ChatStore.latestOrCreate(ctx) }
+                                    openConversation(next.id)
                                 }
-                            ) {
-                                Text(c.title, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-                                Text(
-                                    java.time.Instant.ofEpochMilli(c.updatedAt)
-                                        .atZone(java.time.ZoneId.systemDefault())
-                                        .format(java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")),
-                                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
                             }
-                            IconButton(onClick = {
-                                renameTarget = c; renameText = c.title
-                            }) {
-                                Text("改名", fontSize = 12.sp, color = Primary)
-                            }
-                            IconButton(onClick = {
-                                scope.launch {
-                                    withContext(Dispatchers.IO) { ChatStore.delete(ctx, c.id) }
-                                    conversations = withContext(Dispatchers.IO) { ChatStore.list(ctx) }
-                                    if (c.id == convId) {
-                                        val next = withContext(Dispatchers.IO) { ChatStore.latestOrCreate(ctx) }
-                                        openConversation(next.id)
-                                    }
-                                }
-                            }) {
-                                Icon(Icons.Filled.Delete, "删除", tint = Red, modifier = Modifier.height(18.dp))
-                            }
+                        }) {
+                            Icon(Icons.Filled.Delete, "删除", tint = Red, modifier = Modifier.height(18.dp))
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = { showHistory = false }) { Text("关闭") }
+                Spacer(Modifier.height(24.dp))
             }
-        )
+        }
+    }
+
+    // ===== 长按气泡 → 底部操作表（Material3 ModalBottomSheet + 轻触觉）=====
+    sheetTarget?.let { target ->
+        // Back 键只关操作表，不穿透到 MainActivity 的页面导航（后组合者优先）
+        BackHandler { sheetTarget = null }
+        ModalBottomSheet(
+            onDismissRequest = { sheetTarget = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            Column(Modifier.padding(bottom = 24.dp)) {
+                SheetActionRow(Icons.Filled.ContentCopy, "复制") {
+                    clipboard.setText(AnnotatedString(target.text))
+                    sheetTarget = null
+                    android.widget.Toast.makeText(ctx, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                if (!target.streaming) {
+                    SheetActionRow(Icons.Filled.Delete, "删除", danger = true) {
+                        deletedIds.add(target.id)
+                        items.removeAll { it.id == target.id }
+                        sheetTarget = null
+                        scope.launch {
+                            withContext(Dispatchers.IO) { ChatStore.deleteMessage(ctx, target.id) }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // 重命名
@@ -611,64 +978,145 @@ fun ChatScreen(
 @Composable
 private fun ChatBubble(
     m: ChatItem,
-    typedChars: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>
+    batchCuts: androidx.compose.runtime.snapshots.SnapshotStateMap<String, List<Int>>,
+    batchSettled: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>,
+    reducedMotion: Boolean,
+    onLongPress: () -> Unit
 ) {
     val isUser = m.role == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
         if (isUser) {
-            // 用户消息：浅色气泡贴合文字——限宽换行，文字多长气泡多长，整体靠右
+            // 用户消息：强调色气泡贴合文字——限宽80%屏宽，PrimaryDeep 底白字对比度4.7:1 ≥4.5
+            val maxBubble = with(LocalConfiguration.current) { (screenWidthDp * 0.8f).dp }
             Text(
                 m.text,
                 fontSize = 14.sp,
                 color = androidx.compose.ui.graphics.Color.White,
                 modifier = Modifier
-                    .widthIn(max = 300.dp)
-                    .background(Primary, RoundedCornerShape(16.dp))
+                    .pointerInput(m.id) { detectTapGestures(onLongPress = { onLongPress() }) }
+                    .widthIn(max = maxBubble)
+                    .background(PrimaryDeep, RoundedCornerShape(16.dp))
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             )
         } else {
-            // ===== Agent 式逐字流出（参考 C:\Users\28182\Desktop\Agent 前端效果）=====
-            // 数据到达节奏无关紧要：本地节拍器按 token 流出感连续推进字符（渐快出、渐慢收），
-            // 尾部 streaming 期间显示闪烁光标 ▍（1s blink，同 Agent 的 CSS 效果）。
+            // ===== 段落批次揭示：本地播放队列，攒到安全边界整批 ~520ms 淡入 =====
             val currentText by rememberUpdatedState(m.text)
-            if (m.id !in typedChars) {
-                // 空缓冲的新任务 → 从 0 逐字流出；已有缓冲（切回/历史）→ 立即全文渲染（规则4）
-                typedChars[m.id] = if (m.streaming && m.text.isEmpty()) 0 else m.text.length
+            val currentStreaming by rememberUpdatedState(m.streaming)
+            if (m.id !in batchCuts) {
+                // 空缓冲新任务 → 从零攒批；已有缓冲（切回/历史）→ 立即全文渲染（规则4）
+                val instant = !(m.streaming && m.text.isEmpty())
+                batchCuts[m.id] = if (instant) listOf(m.text.length) else emptyList()
+                batchSettled[m.id] = if (instant) 1 else 0
                 android.util.Log.d(
-                    "SHANJI", "reveal init id=${m.id.take(6)} streaming=${m.streaming} textLen=${m.text.length}"
+                    "SHANJI", "batch init id=${m.id.take(6)} instant=$instant len=${m.text.length}"
                 )
             }
-            val shown = typedChars[m.id] ?: 0
+            val cuts = batchCuts[m.id] ?: emptyList()
+            val settledCount = batchSettled[m.id] ?: 0
+            val full = m.text
+
+            // 播放驱动：按安全边界逐批揭示；上一批淡入完成才切下一批（有界节奏）
             LaunchedEffect(m.id) {
-                var tick = 0
                 while (true) {
-                    val len = currentText.length
-                    val cur = typedChars[m.id] ?: 0
-                    if (cur < len) {
-                        // 连续小步流出：剩余多时快（最多4字/25ms≈160字/秒），收尾渐慢到1字
-                        typedChars[m.id] = minOf(len, cur + (len - cur).coerceIn(1, 4))
-                        if (++tick % 20 == 0) {
-                            android.util.Log.d("SHANJI", "reveal id=${m.id.take(6)} ${(typedChars[m.id] ?: 0)}/$len")
-                        }
+                    delay(80)
+                    val text = currentText
+                    val streaming = currentStreaming
+                    val cs = batchCuts[m.id] ?: break
+                    val settled = batchSettled[m.id] ?: 0
+                    if (cs.size > settled) continue          // 上一批还在淡入
+                    val revealed = cs.lastOrNull() ?: 0
+                    if (revealed >= text.length) {
+                        if (!streaming) break                // 完成且已全部揭示
+                        continue                             // 等更多文本
                     }
-                    delay(25)
+                    val cut = nextRevealCut(text, revealed, streamDone = !streaming) ?: continue
+                    if (cut <= revealed) continue
+                    batchCuts[m.id] = cs + cut
+                    android.util.Log.d(
+                        "SHANJI", "batch id=${m.id.take(6)} [${revealed},$cut)/${text.length} streaming=$streaming"
+                    )
                 }
             }
-            // 闪烁光标（Agent 同款 step-end blink，500ms 亮灭）
+
+            // 闪烁光标（streaming 尾部；reduced-motion 下不闪常显）
             var blink by remember(m.id) { mutableStateOf(true) }
-            LaunchedEffect(m.id, m.streaming) {
-                if (!m.streaming) return@LaunchedEffect
+            LaunchedEffect(m.id, m.streaming, reducedMotion) {
+                if (!m.streaming || reducedMotion) return@LaunchedEffect
                 while (true) { delay(500); blink = !blink }
             }
-            val len = currentText.length
-            val display = currentText.substring(0, minOf(shown, len))
-            val cursor = if (m.streaming && blink) "▍" else ""
-            val text = display + cursor
-            if (text.isEmpty()) {
-                Text("▍", fontSize = 14.sp, color = Primary)
-            } else {
-                MarkdownText(text, Modifier.fillMaxWidth())
+
+            Column(
+                Modifier.fillMaxWidth()
+                    .pointerInput(m.id) { detectTapGestures(onLongPress = { onLongPress() }) },
+                verticalArrangement = Arrangement.spacedBy(6.dp) // 与 MarkdownText 块间距一致，分批=整块 → 合并视图等价
+            ) {
+                if (cuts.isEmpty()) {
+                    // 预缓冲期：尚无批次 → 独立活动光标
+                    if (m.streaming) Text("▍", fontSize = 14.sp, color = Primary)
+                } else {
+                    var start = 0
+                    cuts.forEachIndexed { i, rawEnd ->
+                        val s = start.coerceAtMost(full.length)
+                        val e = rawEnd.coerceAtMost(full.length)
+                        if (e > s) {
+                            val seg = full.substring(s, e)
+                            val isLast = i == cuts.lastIndex
+                            // 尾批光标：trim 尾部换行再接，避免光标自成一块；旧批不持光标 → 不重排
+                            val body = seg.dropLastWhile { it == '\n' }
+                            val tailNl = seg.length - body.length
+                            val cursor = if (isLast && m.streaming && (blink || reducedMotion)) "▍" else ""
+                            val cursorPart = when {
+                                cursor.isEmpty() -> ""
+                                body.endsWith("```") || body.endsWith("|") -> "\n$cursor" // 围栏/表格行后换行，防破坏行结构
+                                else -> cursor
+                            }
+                            val segText = body + cursorPart + "\n".repeat(tailNl)
+                            key(i) {
+                                val alpha = remember(m.id, i, cuts.size) {
+                                    Animatable(
+                                        if (i < (batchSettled[m.id] ?: 0)) 1f else 0f
+                                    )
+                                }
+                                LaunchedEffect(m.id, i, cuts.size) {
+                                    if (i >= (batchSettled[m.id] ?: 0)) {
+                                        // 新批次：~520ms 淡入后定稿
+                                        if (reducedMotion) alpha.snapTo(1f)
+                                        else {
+                                            alpha.snapTo(0f)
+                                            alpha.animateTo(1f, tween(520))
+                                        }
+                                        batchSettled[m.id] = i + 1
+                                        android.util.Log.d("SHANJI", "batch settle id=${m.id.take(6)} idx=$i")
+                                    }
+                                }
+                                MarkdownText(segText, Modifier.fillMaxWidth().alpha(alpha.value))
+                            }
+                        }
+                        start = rawEnd
+                    }
+                }
             }
         }
+    }
+}
+
+/** 长按操作表单行：48dp 触摸目标 */
+@Composable
+private fun SheetActionRow(icon: ImageVector, label: String, danger: Boolean = false, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            icon, null,
+            tint = if (danger) Red else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(22.dp)
+        )
+        Spacer(Modifier.width(14.dp))
+        Text(label, fontSize = 15.sp, color = if (danger) Red else MaterialTheme.colorScheme.onSurface)
     }
 }

@@ -76,4 +76,8 @@ interface ChatMessageDao {
     /** 摘要后删除最早的一批消息（保留摘要即可还原语义） */
     @Query("DELETE FROM chat_messages WHERE conversationId = :convId AND createdAt <= :cutoff")
     suspend fun deleteUpTo(convId: String, cutoff: Long)
+
+    /** 长按气泡 → 删除单条消息 */
+    @Query("DELETE FROM chat_messages WHERE id = :id")
+    suspend fun deleteById(id: String)
 }

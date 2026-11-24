@@ -69,6 +69,11 @@ object ChatStore {
     suspend fun messages(context: Context, convId: String): List<ChatMessageEntity> =
         db(context).chatMessageDao().listByConversation(convId)
 
+    /** 长按气泡 → 删除单条消息 */
+    suspend fun deleteMessage(context: Context, id: String) {
+        db(context).chatMessageDao().deleteById(id)
+    }
+
     /**
      * 落一条消息。[id] 可指定：流式回复用服务端 messageId 作主键，
      * 配合 Room REPLACE 实现幂等（断点续传完成后再落库不会重复）。
