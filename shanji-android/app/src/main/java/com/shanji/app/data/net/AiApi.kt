@@ -58,6 +58,32 @@ data class AiInsightReq(
 @Serializable
 data class AiInsightData(val text: String = "")
 
+@Serializable
+data class AiVisionReq(val image: String) // base64 JPEG（不带 data: 前缀）
+
+@Serializable
+data class AiVisionData(
+    val amount: Double? = null,
+    val merchant: String? = null,
+    val time: String? = null    // "yyyy-MM-dd HH:mm"，识别不出为 null
+)
+
+/* ---- AI 结构化卡片（#ACT# JSON 的 card 字段，随正文 #CARD# 行持久化） ---- */
+
+@Serializable
+data class AiCardBtn(
+    val label: String = "",
+    val fn: String = "",        // queryTx | budget_set | addTx
+    val params: Map<String, JsonElement> = emptyMap()
+)
+
+@Serializable
+data class AiCard(
+    val title: String = "",
+    val lines: List<String> = emptyList(),
+    val buttons: List<AiCardBtn> = emptyList()
+)
+
 interface AiApi {
     // AI 接口服务端已放开匿名访问：有 token 就带（Retrofit 对 null 不发该头），没有也能用
     @POST("api/ai/parse")
@@ -65,6 +91,13 @@ interface AiApi {
         @Header("Authorization") bearer: String?,
         @Body req: AiParseReq
     ): ApiResponse<AiParseData>
+
+    /** 截图识别（多模态）：端上只传压缩后的 base64，key 在服务端 */
+    @POST("api/ai/vision")
+    suspend fun vision(
+        @Header("Authorization") bearer: String?,
+        @Body req: AiVisionReq
+    ): ApiResponse<AiVisionData>
 
     @POST("api/ai/chat")
     suspend fun chat(

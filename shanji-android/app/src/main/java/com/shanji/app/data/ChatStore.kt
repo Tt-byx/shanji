@@ -130,7 +130,8 @@ object ChatStore {
         if (summary.isNotBlank()) {
             out.add("system" to "以下是此前对话的摘要（长期记忆）：$summary")
         }
-        fresh.forEach { out.add(it.role to it.content) }
+        // #CARD# 结构化卡片行是端上渲染用的协议，回传给 AI 只会干扰上下文
+        fresh.forEach { out.add(it.role to it.content.substringBefore("#CARD#").trimEnd()) }
         return out
     }
 

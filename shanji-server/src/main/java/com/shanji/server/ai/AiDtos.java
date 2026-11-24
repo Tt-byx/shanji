@@ -35,4 +35,9 @@ public class AiDtos {
     public record InsightRequest(String kind, List<String> ruleHits, String stats, String persona) {}
 
     public record InsightResult(String text) {}
+
+    /** 截图识别（多模态）：客户端压缩上传，服务端持 key 调视觉模型 */
+    public record VisionRequest(String image) {}
+
+    public record VisionResult(Double amount, String merchant, String time) {}
 }

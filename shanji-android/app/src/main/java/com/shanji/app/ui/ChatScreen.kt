@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -86,10 +87,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shanji.app.data.AppStore
+import com.shanji.app.data.Categories
 import com.shanji.app.data.ChatStore
 import com.shanji.app.data.ChatStreamManager
 import com.shanji.app.data.Ledger
 import com.shanji.app.data.fmtAmount
+import com.shanji.app.data.toLocalDateTime
 import com.shanji.app.data.net.AiAction
 import com.shanji.app.data.net.AiChatMsg
 import com.shanji.app.data.net.AiChatReq
@@ -100,6 +103,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.decodeFromString
 import java.time.YearMonth
 
 private data class ChatItem(
@@ -346,7 +350,8 @@ private suspend fun LazyListState.animateScrollToBottom() {
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    onAddTx: (amount: Double, merchant: String, category: String, type: String) -> Unit
+    onAddTx: (amount: Double, merchant: String, category: String, type: String) -> Unit,
+    onEditTx: (id: String) -> Unit = {}
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -361,6 +366,8 @@ fun ChatScreen(
     var renameText by remember { mutableStateOf("") }
     // 长按气泡 → 底部操作表（复制 / 删除）
     var sheetTarget by remember { mutableStateOf<ChatItem?>(null) }
+    // 溯源/卡片「看明细」→ 底部弹层（category/month/keyword 过滤，null = 关闭）
+    var traceQuery by remember { mutableStateOf<Map<String, String>?>(null) }
     val haptics = LocalHapticFeedback.current
     val clipboard = LocalClipboardManager.current
     // reduced-motion：开发者选项「动画时长缩放=关闭」≈ 系统级减弱动态效果
@@ -431,16 +438,71 @@ fun ChatScreen(
         }
     }
 
-    /** 本月统计上下文（给 AI 的数字必须来自本机，禁止编造） */
+    /** 近 6 个月 + 最近 20 笔 + 预算/周期状态（给 AI 的数字必须来自本机，禁止编造） */
     fun monthContext(): String {
-        val ym = YearMonth.now()
-        val s = Ledger.monthSummary(AppStore.store.txs, ym)
-        val cats = Ledger.categoryBreakdown(Ledger.monthTx(AppStore.store.txs, ym)).take(5)
-        val catLine = cats.joinToString("、") { "${it.cat.label}¥${fmtAmount(it.amount)}" }
-        return "本月支出¥${fmtAmount(s.expense)} 收入¥${fmtAmount(s.income)} 结余¥${fmtAmount(s.balance)}；分类：$catLine"
+        val txs = AppStore.store.txs
+        val now = YearMonth.now()
+        val sb = StringBuilder()
+        sb.append("[近6个月]\n")
+        for (i in 5 downTo 0) {
+            val ym = now.minusMonths(i.toLong())
+            val s = Ledger.monthSummary(txs, ym)
+            sb.append("${ym}: 支出¥${fmtAmount(s.expense)} 收入¥${fmtAmount(s.income)}\n")
+        }
+        val cats = Ledger.categoryBreakdown(Ledger.monthTx(txs, now)).take(5)
+        if (cats.isNotEmpty()) {
+            sb.append("本月分类：")
+                .append(cats.joinToString("、") { "${it.cat.label}¥${fmtAmount(it.amount)}" }).append('\n')
+        }
+        val recent = txs.sortedByDescending { it.ts }.take(20)
+        if (recent.isNotEmpty()) {
+            sb.append("[最近20笔]\n")
+            recent.forEach { t ->
+                val d = toLocalDateTime(t.ts)
+                val sign = if (t.type == "expense") "-" else if (t.type == "income") "+" else "±"
+                sb.append("${d.monthValue}-${d.dayOfMonth} ${t.merchant} ")
+                    .append("${Categories.of(t.category).label} $sign¥${fmtAmount(t.amount)}\n")
+            }
+        }
+        val budgets = AppStore.budgets
+        if (budgets.list.isNotEmpty()) {
+            sb.append("[预算] 总预算¥${fmtAmount(budgets.total())}")
+            budgets.list.filter { it.scope == "category" }.forEach {
+                sb.append(" ${Categories.of(it.category).label}¥${fmtAmount(it.amount)}")
+            }
+            val used = Ledger.monthSummary(txs, now).expense
+            sb.append("，本月已花¥${fmtAmount(used)}\n")
+        }
+        val recurring = AppStore.recurring.list.filter { it.enabled }
+        if (recurring.isNotEmpty()) {
+            sb.append("[周期账单] ").append(recurring.joinToString("；") {
+                "每月${it.dayOfMonth}号 ${it.merchant}¥${fmtAmount(it.amount)}"
+            }).append('\n')
+        }
+        return sb.toString()
     }
 
-    /** 本轮查账结果回传 AI 出第二轮（第二轮也走后台任务，allowAct=false 不递归） */
+    /** 把本轮查询/动作结果回传 AI 出第二轮（第二轮走后台任务，allowAct=false 不递归） */
+    fun runFollowUp(resultText: String, cid: String) {
+        startPending = true // 同步置位：首轮 DONE 到二轮任务创建之间 busy 不出现空窗
+        scope.launch {
+            // 首轮回复已由 ChatStreamManager 以 messageId 幂等落库，这里只补查询结果
+            withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "user", "[系统] $resultText") }
+            val mem = withContext(Dispatchers.IO) { ChatStore.buildMemory(ctx, cid) }
+            val req = AiChatReq(mem.map { AiChatMsg(it.first, it.second) }, monthContext(), persona)
+            runCatching { ChatStreamManager.start(ctx, cid, req, allowAct = false) }
+                .onSuccess { startPending = false }
+                .onFailure {
+                    startPending = false
+                    android.util.Log.w("SHANJI", "round2 start fail: ${it.message}")
+                    val msg = it.message ?: "没查成，稍后再试"
+                    items.add(ChatItem("e${System.nanoTime()}", "assistant", msg))
+                    withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", msg) }
+                }
+        }
+    }
+
+    /** 本轮查账结果回传 AI 出第二轮 */
     fun runQueryThenReply(params: Map<String, kotlinx.serialization.json.JsonElement>, cid: String) {
         val keyword = params["keyword"]?.toString()?.trim('"') ?: ""
         val cat = params["category"]?.toString()?.trim('"') ?: ""
@@ -458,23 +520,51 @@ fun ChatScreen(
         val detail = hits.take(10).joinToString("；") { "${it.merchant}¥${fmtAmount(it.amount)}" }
         val resultText = "查询结果：${hits.size} 笔，支出合计¥${fmtAmount(total)}" +
             (if (detail.isNotEmpty()) "。明细：$detail" else "")
+        runFollowUp(resultText, cid)
+    }
 
-        startPending = true // 同步置位：首轮 DONE 到二轮任务创建之间 busy 不出现空窗
-        scope.launch {
-            // 首轮回复已由 ChatStreamManager 以 messageId 幂等落库，这里只补查询结果
-            withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "user", "[系统] $resultText") }
-            val mem = withContext(Dispatchers.IO) { ChatStore.buildMemory(ctx, cid) }
-            val req = AiChatReq(mem.map { AiChatMsg(it.first, it.second) }, monthContext(), persona)
-            runCatching { ChatStreamManager.start(ctx, cid, req, allowAct = false) }
-                .onSuccess { startPending = false }
-                .onFailure {
-                    startPending = false
-                    android.util.Log.w("SHANJI", "round2 start fail: ${it.message}")
-                    val msg = it.message ?: "没查成，稍后再试"
-                    items.add(ChatItem("e${System.nanoTime()}", "assistant", msg))
-                    withContext(Dispatchers.IO) { ChatStore.append(ctx, cid, "assistant", msg) }
-                }
+    /** trend 动作：近 N 月（可选分类）支出序列回传 AI */
+    fun runTrendThenReply(params: Map<String, kotlinx.serialization.json.JsonElement>, cid: String) {
+        val months = params["months"]?.toString()?.trim('"')?.toIntOrNull() ?: 6
+        val cat = params["category"]?.toString()?.trim('"') ?: ""
+        val now = YearMonth.now()
+        val series = (months - 1 downTo 0).map { i ->
+            val ym = now.minusMonths(i.toLong())
+            val sum = Ledger.monthTx(AppStore.store.txs, ym)
+                .filter { it.type == "expense" && (cat.isEmpty() || it.category == cat) }
+                .sumOf { it.amount }
+            "$ym ¥${fmtAmount(sum)}"
         }
+        runFollowUp("近${months}个月支出趋势：" + series.joinToString("，"), cid)
+    }
+
+    /** budget_set 动作：直接写预算库，再回传 AI 出确认语 */
+    fun runBudgetSetThenReply(params: Map<String, kotlinx.serialization.json.JsonElement>, cid: String) {
+        val amount = params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
+        if (amount <= 0) { runFollowUp("预算设置失败：金额无效", cid); return }
+        val scope = params["scope"]?.toString()?.trim('"') ?: "total"
+        val cat = params["category"]?.toString()?.trim('"') ?: ""
+        AppStore.budgets.set(if (scope == "category") "category" else "total", cat, amount)
+        val label = if (scope == "category") "${Categories.of(cat).label}预算" else "总预算"
+        runFollowUp("已设置${label} ¥${fmtAmount(amount)}（月度循环）", cid)
+    }
+
+    /** subscribe 动作：扫出近 3 个月以上每月都有的近似固定支出回传 AI */
+    fun runSubscribeThenReply(cid: String) {
+        val txs = AppStore.store.txs.filter { it.type == "expense" }
+        val now = YearMonth.now()
+        val candidates = txs.groupBy { it.merchant.trim() }.mapNotNull { (merchant, list) ->
+            val months = list.map { YearMonth.from(toLocalDateTime(it.ts)) }.distinct()
+            if (months.size < 3 || merchant.isBlank()) return@mapNotNull null
+            val avg = list.map { it.amount }.average()
+            val min = list.minOf { it.amount }
+            val max = list.maxOf { it.amount }
+            if (min <= 0 || max > avg * 1.3 || max < avg * 0.7) return@mapNotNull null
+            "$merchant 约¥${fmtAmount(avg)}/月（近${months.size}个月每月都有）"
+        }
+        val text = if (candidates.isEmpty()) "没有发现连续3个月以上的固定支出"
+        else "疑似订阅/固定支出：" + candidates.joinToString("；")
+        runFollowUp(text, cid)
     }
 
     /** 处理动作行（#ACT# 里的 actions）。cid = 动作所属会话（不依赖当前选中会话） */
@@ -506,6 +596,57 @@ fun ChatScreen(
         if (query != null) {
             runQueryThenReply(query.params, cid)
         }
+        val trend = actions.firstOrNull { it.fn == "trend" }
+        if (trend != null) {
+            runTrendThenReply(trend.params, cid)
+        }
+        val budget = actions.firstOrNull { it.fn == "budget_set" }
+        if (budget != null) {
+            runBudgetSetThenReply(budget.params, cid)
+        }
+        if (actions.any { it.fn == "subscribe" }) {
+            runSubscribeThenReply(cid)
+        }
+    }
+
+    /** 卡片按钮：queryTx 直接弹明细（结论落到操作，不再绕 AI 二轮）；budget_set/addTx 本地执行 */
+    fun cardAction(btn: com.shanji.app.data.net.AiCardBtn) {
+        when (btn.fn) {
+            "queryTx" -> traceQuery = btn.params.mapValues { it.value.toString().trim('"') }
+            "budget_set" -> {
+                val amount = btn.params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
+                if (amount > 0) {
+                    val scope = btn.params["scope"]?.toString()?.trim('"') ?: "total"
+                    val cat = btn.params["category"]?.toString()?.trim('"') ?: ""
+                    AppStore.budgets.set(if (scope == "category") "category" else "total", cat, amount)
+                    val label = if (scope == "category") "${Categories.of(cat).label}预算" else "总预算"
+                    android.widget.Toast.makeText(
+                        ctx, "已设置${label} ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            "addTx" -> {
+                val amount = btn.params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
+                if (amount > 0) {
+                    onAddTx(
+                        amount,
+                        btn.params["merchant"]?.toString()?.trim('"') ?: "",
+                        btn.params["category"]?.toString()?.trim('"') ?: "other",
+                        btn.params["type"]?.toString()?.trim('"') ?: "expense"
+                    )
+                }
+            }
+        }
+    }
+
+    /** 溯源链接 shanji-trace:category=dining&month=2026-11 → 弹出对应账单明细 */
+    fun traceLink(url: String) {
+        val q = url.substringAfter("shanji-trace:", "")
+        val params = q.split("&").mapNotNull { kv ->
+            val i = kv.indexOf('=')
+            if (i > 0) kv.substring(0, i) to kv.substring(i + 1) else null
+        }.toMap()
+        if (params.isNotEmpty()) traceQuery = params
     }
 
     // ===== 历史抽屉（覆盖层，left/right 位移，禁 transform）=====
@@ -726,7 +867,9 @@ fun ChatScreen(
                             onLongPress = {
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 sheetTarget = m
-                            }
+                            },
+                            onCardAction = { cardAction(it) },
+                            onTrace = { traceLink(it) }
                         )
                     }
                     if (busy && items.lastOrNull()?.text?.isEmpty() != true) {
@@ -945,6 +1088,53 @@ fun ChatScreen(
         }
     }
 
+    // ===== 溯源明细：AI 数字/卡片按钮点开 → 底部弹层列出对应账单 =====
+    traceQuery?.let { q ->
+        BackHandler { traceQuery = null }
+        val month = q["month"] ?: ""
+        val cat = q["category"] ?: ""
+        val keyword = q["keyword"] ?: ""
+        val hits = remember(q) {
+            AppStore.store.txs.filter { t ->
+                val inMonth = month.isBlank() || java.time.YearMonth.from(
+                    java.time.Instant.ofEpochMilli(t.ts).atZone(java.time.ZoneId.systemDefault())
+                ).toString() == month
+                val inCat = cat.isBlank() || t.category == cat
+                val inKw = keyword.isBlank() ||
+                    t.merchant.contains(keyword) || t.note.contains(keyword)
+                inMonth && inCat && inKw
+            }.sortedByDescending { it.ts }
+        }
+        ModalBottomSheet(
+            onDismissRequest = { traceQuery = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ) {
+            val total = hits.filter { it.type == "expense" }.sumOf { it.amount }
+            Column(Modifier.padding(bottom = 24.dp)) {
+                Text(
+                    "AI 提到的账单 · ${hits.size} 笔 · 支出合计 ¥${fmtAmount(total)}",
+                    fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                )
+                if (hits.isEmpty()) {
+                    Text(
+                        "没有匹配的账单",
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+                    )
+                }
+                LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                    items(hits.size) { i ->
+                        TxRow(hits[i], onClick = {
+                            traceQuery = null
+                            onEditTx(hits[i].id)
+                        })
+                    }
+                }
+            }
+        }
+    }
+
     // 重命名
     if (renameTarget != null) {
         AlertDialog(
@@ -981,7 +1171,9 @@ private fun ChatBubble(
     batchCuts: androidx.compose.runtime.snapshots.SnapshotStateMap<String, List<Int>>,
     batchSettled: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Int>,
     reducedMotion: Boolean,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    onCardAction: (com.shanji.app.data.net.AiCardBtn) -> Unit = {},
+    onTrace: (String) -> Unit = {}
 ) {
     val isUser = m.role == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
@@ -999,21 +1191,32 @@ private fun ChatBubble(
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             )
         } else {
+            // #CARD# 结构化卡片行：从正文剥离，正文走批次揭示，卡片渲染在气泡下方
+            val bodyText = m.text.substringBefore("\n#CARD#").substringBefore("#CARD#")
+            val card = remember(m.id, m.text) {
+                val idx = m.text.indexOf("#CARD#")
+                if (idx < 0) null else runCatching {
+                    kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                        .decodeFromString<com.shanji.app.data.net.AiCard>(
+                            m.text.substring(idx + 6).trim()
+                        )
+                }.getOrNull()
+            }
             // ===== 段落批次揭示：本地播放队列，攒到安全边界整批 ~520ms 淡入 =====
-            val currentText by rememberUpdatedState(m.text)
+            val currentText by rememberUpdatedState(bodyText)
             val currentStreaming by rememberUpdatedState(m.streaming)
             if (m.id !in batchCuts) {
                 // 空缓冲新任务 → 从零攒批；已有缓冲（切回/历史）→ 立即全文渲染（规则4）
-                val instant = !(m.streaming && m.text.isEmpty())
-                batchCuts[m.id] = if (instant) listOf(m.text.length) else emptyList()
+                val instant = !(m.streaming && bodyText.isEmpty())
+                batchCuts[m.id] = if (instant) listOf(bodyText.length) else emptyList()
                 batchSettled[m.id] = if (instant) 1 else 0
                 android.util.Log.d(
-                    "SHANJI", "batch init id=${m.id.take(6)} instant=$instant len=${m.text.length}"
+                    "SHANJI", "batch init id=${m.id.take(6)} instant=$instant len=${bodyText.length}"
                 )
             }
             val cuts = batchCuts[m.id] ?: emptyList()
             val settledCount = batchSettled[m.id] ?: 0
-            val full = m.text
+            val full = bodyText
 
             // 播放驱动：按安全边界逐批揭示；上一批淡入完成才切下一批（有界节奏）
             LaunchedEffect(m.id) {
@@ -1089,11 +1292,49 @@ private fun ChatBubble(
                                         android.util.Log.d("SHANJI", "batch settle id=${m.id.take(6)} idx=$i")
                                     }
                                 }
-                                MarkdownText(segText, Modifier.fillMaxWidth().alpha(alpha.value))
+                                MarkdownText(
+                                    segText,
+                                    Modifier.fillMaxWidth().alpha(alpha.value),
+                                    onLink = { onTrace(it) }
+                                )
                             }
                         }
                         start = rawEnd
                     }
+                }
+                // 结构化卡片：标题 + 要点行 + 可点按钮（AI 结论落到操作）
+                if (card != null && cuts.isNotEmpty()) {
+                    AiCardView(card, onClick = { onCardAction(it) })
+                }
+            }
+        }
+    }
+}
+
+/** AI 结构化卡片：灰底圆角，标题/要点/操作按钮 */
+@Composable
+private fun AiCardView(card: com.shanji.app.data.net.AiCard, onClick: (com.shanji.app.data.net.AiCardBtn) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(card.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        card.lines.forEach {
+            Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 18.sp)
+        }
+        if (card.buttons.isNotEmpty()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                card.buttons.forEach { btn ->
+                    Text(
+                        btn.label, fontSize = 13.sp, color = Primary,
+                        modifier = Modifier
+                            .background(Primary.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
+                            .clickable { onClick(btn) }
+                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                    )
                 }
             }
         }

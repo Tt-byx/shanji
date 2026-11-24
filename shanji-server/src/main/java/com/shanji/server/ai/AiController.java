@@ -29,6 +29,12 @@ public class AiController {
         return ApiResponse.ok(aiService.parse(req));
     }
 
+    /** 截图识别（多模态）：客户端压缩上传 base64，服务端持 key 调视觉模型 */
+    @PostMapping("/vision")
+    public ApiResponse<AiDtos.VisionResult> vision(@RequestBody AiDtos.VisionRequest req) {
+        return ApiResponse.ok(aiService.vision(req));
+    }
+
     /** 对话查账/记账（多轮由客户端维护） */
     @PostMapping("/chat")
     public ApiResponse<AiDtos.ChatResult> chat(@RequestBody AiDtos.ChatRequest req) {

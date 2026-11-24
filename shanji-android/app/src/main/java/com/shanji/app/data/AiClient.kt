@@ -7,6 +7,7 @@ import com.shanji.app.data.net.AiChatReq
 import com.shanji.app.data.net.AiInsightReq
 import com.shanji.app.data.net.AiParseData
 import com.shanji.app.data.net.AiParseReq
+import com.shanji.app.data.net.AiVisionReq
 import com.shanji.app.data.net.ApiFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -28,6 +29,18 @@ object AiClient {
                 val resp = ApiFactory.ai(context).parse(bearer(context), AiParseReq(rawText, persona))
                 if (resp.code != 0 || resp.data == null) error(resp.message.ifEmpty { "" })
                 resp.data
+            }.getOrElse { throw Exception(SyncManager.friendlyError(it)) }
+        }
+
+    /** 截图识别（多模态走服务器，端侧不再需要自己配 key）：压缩 JPEG → base64 → /api/ai/vision */
+    suspend fun vision(context: Context, jpegBytes: ByteArray): AiResult =
+        withContext(Dispatchers.IO) {
+            val b64 = java.util.Base64.getEncoder().encodeToString(jpegBytes)
+            runCatching {
+                val resp = ApiFactory.ai(context).vision(bearer(context), AiVisionReq(b64))
+                if (resp.code != 0 || resp.data == null) error(resp.message.ifEmpty { "" })
+                val d = resp.data
+                AiResult(d.amount, d.merchant, d.time)
             }.getOrElse { throw Exception(SyncManager.friendlyError(it)) }
         }
 

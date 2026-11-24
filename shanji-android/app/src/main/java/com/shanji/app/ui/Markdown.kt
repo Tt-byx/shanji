@@ -164,15 +164,20 @@ private fun parseBlocks(text: String): List<Block> {
 }
 
 // ---------- 渲染 ----------
-private fun AnnotatedString.Builder.appendSegs(segs: List<Seg>, codeBg: Color, linkColor: Color) {
+private fun AnnotatedString.Builder.appendSegs(
+    segs: List<Seg>,
+    codeBg: Color,
+    linkColor: Color,
+    onLink: ((String) -> Unit)?
+) {
     segs.forEach { s ->
         when (s) {
             is Seg.T -> append(s.s)
             is Seg.B -> {
-                pushStyle(SpanStyle(fontWeight = FontWeight.Bold)); appendSegs(s.segs, codeBg, linkColor); pop()
+                pushStyle(SpanStyle(fontWeight = FontWeight.Bold)); appendSegs(s.segs, codeBg, linkColor, onLink); pop()
             }
             is Seg.I -> {
-                pushStyle(SpanStyle(fontStyle = FontStyle.Italic)); appendSegs(s.segs, codeBg, linkColor); pop()
+                pushStyle(SpanStyle(fontStyle = FontStyle.Italic)); appendSegs(s.segs, codeBg, linkColor, onLink); pop()
             }
             is Seg.C -> {
                 pushStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBg))
@@ -180,7 +185,15 @@ private fun AnnotatedString.Builder.appendSegs(segs: List<Seg>, codeBg: Color, l
             }
             is Seg.L -> {
                 pushStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline))
-                append(s.text); pop()
+                // 溯源链接（shanji-trace:）交给调用方跳明细；普通链接走系统浏览器
+                if (onLink != null && s.url.startsWith("shanji-trace:")) {
+                    pushLink(androidx.compose.ui.text.LinkAnnotation.Clickable(s.url) { onLink(s.url) })
+                } else {
+                    pushLink(androidx.compose.ui.text.LinkAnnotation.Url(s.url))
+                }
+                append(s.text)
+                pop() // link annotation
+                pop() // span style
             }
         }
     }
@@ -192,12 +205,13 @@ private fun SegsText(
     fontSize: Int,
     bold: Boolean = false,
     color: Color = Color.Unspecified,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onLink: ((String) -> Unit)? = null
 ) {
     val codeBg = MaterialTheme.colorScheme.surfaceVariant
     val linkColor = MaterialTheme.colorScheme.primary
     Text(
-        text = buildAnnotatedString { appendSegs(segs, codeBg, linkColor) },
+        text = buildAnnotatedString { appendSegs(segs, codeBg, linkColor, onLink) },
         fontSize = fontSize.sp,
         fontWeight = if (bold) FontWeight.Bold else FontWeight.Normal,
         color = color,
@@ -206,14 +220,14 @@ private fun SegsText(
     )
 }
 
-/** AI 回复气泡正文：Markdown 排版渲染 */
+/** AI 回复气泡正文：Markdown 排版渲染。[onLink] 点击 shanji-trace: 溯源链接时回调（参数为完整 URL） */
 @Composable
-fun MarkdownText(text: String, modifier: Modifier = Modifier) {
+fun MarkdownText(text: String, modifier: Modifier = Modifier, onLink: ((String) -> Unit)? = null) {
     val blocks = remember(text) { parseBlocks(text) }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         blocks.forEach { b ->
             when (b) {
-                is Block.Para -> SegsText(b.segs, 14)
+                is Block.Para -> SegsText(b.segs, 14, onLink = onLink)
                 is Block.Heading -> SegsText(
                     b.segs, when (b.level) { 1 -> 18; 2 -> 16; else -> 15 }, bold = true
                 )
@@ -226,7 +240,7 @@ fun MarkdownText(text: String, modifier: Modifier = Modifier) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(end = 6.dp)
                             )
-                            SegsText(segs, 14)
+                            SegsText(segs, 14, onLink = onLink)
                         }
                     }
                 }

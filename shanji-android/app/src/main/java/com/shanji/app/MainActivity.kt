@@ -150,7 +150,9 @@ fun MainApp() {
                         recordType = type
                         showRecord = true
                         screen = "home"
-                    }
+                    },
+                    // 溯源明细点一笔 → 直接进编辑弹层
+                    onEditTx = { id -> editingId = id; showRecord = true }
                 )
                 "calendar" -> CalendarScreen(onBack = { screen = "stats" })
                 "recurring" -> RecurringScreen(onBack = { screen = "profile" })

@@ -113,6 +113,79 @@ public class AiService {
         }
     }
 
+    private static final String VISION_SYSTEM = """
+        你是支付账单识别助手。从付款截图中提取信息，只返回一个 JSON 对象，格式：
+        {"amount": 数字(支出金额，正数), "merchant": "商户或事项名称", "time": "yyyy-MM-dd HH:mm"(付款时间,未知则为 null)}
+        不要返回任何其他文字、解释或 markdown 代码块标记。
+        """;
+
+    /** 截图识别：多模态 content（文本 + base64 图片），deepseek-flash 支持图片输入 */
+    public AiDtos.VisionResult vision(AiDtos.VisionRequest req) {
+        String img = req.image() == null ? "" : req.image().trim();
+        if (img.isEmpty()) {
+            throw new BizException(HttpStatus.BAD_REQUEST, "没有收到图片");
+        }
+        if (img.length() > 2_000_000) { // ~1.5MB jpg 的 base64，超限拒收防打爆内存
+            throw new BizException(HttpStatus.BAD_REQUEST, "图片太大，请截小一点");
+        }
+        ensureConfigured();
+        if (!LIMIT.tryAcquire()) {
+            throw new BizException(HttpStatus.TOO_MANY_REQUESTS, "AI 忙不过来，稍后再试");
+        }
+        try {
+            Map<String, Object> body = Map.of(
+                "model", model,
+                "temperature", 0.1,
+                // 推理模型的 reasoning 也计费计长：300 会被 reasoning 吃光导致 content 为空
+                "max_tokens", 1000,
+                "messages", List.of(
+                    Map.of("role", "system", "content", VISION_SYSTEM),
+                    Map.of("role", "user", "content", List.of(
+                        Map.of("type", "text", "text", "识别这张付款截图的金额、商户和付款时间"),
+                        Map.of("type", "image_url", "image_url",
+                            Map.of("url", "data:image/jpeg;base64," + img))
+                    ))
+                )
+            );
+            String resp = client.post()
+                .uri("/chat/completions")
+                .header("Authorization", "Bearer " + apiKey)
+                .header("Content-Type", "application/json")
+                .body(body)
+                .retrieve()
+                .body(String.class);
+            JsonNode content = M.readTree(resp).path("choices").path(0).path("message").path("content");
+            if (content.isMissingNode() || content.asText().isBlank()) {
+                throw new BizException(HttpStatus.BAD_GATEWAY, "AI 没回话，稍后再试");
+            }
+            JsonNode j = extractJson(content.asText());
+            if (j == null || !j.path("amount").isNumber()) {
+                throw new BizException(HttpStatus.BAD_GATEWAY, "没认出金额，请手动填写");
+            }
+            double amount = j.path("amount").asDouble();
+            if (amount <= 0 || amount > 1_000_000) {
+                throw new BizException(HttpStatus.BAD_GATEWAY, "没认出金额，请手动填写");
+            }
+            String time = j.path("time").isTextual()
+                && j.path("time").asText().matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}")
+                ? j.path("time").asText() : null;
+            return new AiDtos.VisionResult(amount, j.path("merchant").asText(""), time);
+        } catch (BizException e) {
+            throw e;
+        } catch (org.springframework.web.client.RestClientResponseException e) {
+            int sc = e.getStatusCode().value();
+            if (sc == 401) throw new BizException(HttpStatus.SERVICE_UNAVAILABLE, "AI 密钥不对，联系管理员");
+            if (sc == 429) throw new BizException(HttpStatus.TOO_MANY_REQUESTS, "AI 用得太频繁了，歇一会儿");
+            log.warn("GLM vision http error: {} {}", sc, e.getResponseBodyAsString());
+            throw new BizException(HttpStatus.BAD_GATEWAY, "AI 服务开了小差，稍后再试");
+        } catch (Exception e) {
+            log.warn("GLM vision failed: {}", e.toString());
+            throw new BizException(HttpStatus.BAD_GATEWAY, "连不上 AI 服务，稍后再试");
+        } finally {
+            LIMIT.release();
+        }
+    }
+
     private static final String PARSE_SYSTEM = """
         你是记账解析器。把用户的一句话消费解析成账单 JSON。只输出 JSON，禁止 markdown，禁止解释。
         格式：{"amount":数字(>0),"type":"expense或income","merchant":"商户或事项","category":"分类key","note":"备注，可空"}
@@ -161,12 +234,22 @@ public class AiService {
 
     private static final String CHAT_SYSTEM = """
         你是记账 App「闪记」的理财小助手，用户是大学生。回答要短、口语化、直接给数字。
-        你能拿到的上下文（本月统计）会以 user 消息形式附上。
-        只有需要查账或记账时才输出动作：第一行必须是以下格式（随后换行，第二行起是给用户的正文）：
+        你能拿到的上下文（近6个月统计、最近账单、预算、周期规则）会以 user 消息形式附上。
+        只有需要动作时才输出动作：第一行必须是以下格式（随后换行，第二行起是给用户的正文）：
         #ACT#{"actions":[{"fn":"queryTx","params":{"keyword":"可选","category":"可选","month":"yyyy-MM可选"}}]}
-        记一笔用：#ACT#{"actions":[{"fn":"addTx","params":{"amount":数字,"merchant":"...","category":"key","type":"expense或income"}}]}
+        可用动作：
+        - queryTx 查账：{"fn":"queryTx","params":{"keyword":"可选","category":"可选","month":"yyyy-MM可选"}}
+        - addTx 记一笔：{"fn":"addTx","params":{"amount":数字,"merchant":"...","category":"key","type":"expense或income"}}
+        - trend 趋势对比：{"fn":"trend","params":{"months":6,"category":"可选"}}
+        - budget_set 设预算：{"fn":"budget_set","params":{"scope":"total或category","category":"可选","amount":数字}}
+        - subscribe 识别订阅类固定支出：{"fn":"subscribe","params":{}}
         不需要动作时禁止输出 #ACT# 行，直接输出正文。分类 key：dining/transport/shopping/daily/entertainment/health/education/other。
-        禁止编造数字，统计里没有的就说没有。
+        给出分类统计结论且有可操作建议时，在 #ACT# JSON 里额外附带 "card" 字段（用户会看到卡片并可点按钮）：
+        #ACT#{"actions":[],"card":{"title":"购物 ¥678 · 占39% · 6笔","lines":["比上月省 ¥120–150"],"buttons":[{"label":"看看这6笔","fn":"queryTx","params":{"category":"shopping"}},{"label":"设个¥600预算","fn":"budget_set","params":{"scope":"category","category":"shopping","amount":600}}]}}
+        card 的 buttons 里 fn 只能用 queryTx / budget_set / addTx；没有合适按钮就省略 card。
+        正文引用具体数字时，在数字后面紧跟溯源链接，用户点击可查看对应账单：
+        [¥142.21](shanji-trace:category=dining&month=2026-11)
+        上下文里没有的数据不要加链接，更不要编造数字；统计里没有的就说没有。
         """;
 
     public AiDtos.ChatResult chat(AiDtos.ChatRequest req) {

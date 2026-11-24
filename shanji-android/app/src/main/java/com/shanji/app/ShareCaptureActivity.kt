@@ -36,9 +36,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.shanji.app.data.AiClient
 import com.shanji.app.data.AiResult
-import com.shanji.app.data.AiSettings
-import com.shanji.app.data.AiRecognizer
 import com.shanji.app.ui.RecordSheet
 import com.shanji.app.ui.theme.Bg
 import com.shanji.app.ui.theme.Primary
@@ -81,9 +80,8 @@ class ShareCaptureActivity : ComponentActivity() {
         var aiResult by remember { mutableStateOf<AiResult?>(null) }
         var manualOverride by remember { mutableStateOf(false) }
 
-        // 配置了 AI 且带截图 → 自动识别
-        val cfg = AiSettings.load(this)
-        val useAi = savedShot != null && cfg.ready && !manualOverride
+        // 带截图 → 走服务器 /api/ai/vision 识别（key 在服务端，端上零配置）
+        val useAi = savedShot != null && !manualOverride
         LaunchedEffect(savedShot, manualOverride) {
             if (!useAi || aiState == AiState.DONE || aiState == AiState.LOADING) return@LaunchedEffect
             aiState = AiState.LOADING
@@ -91,7 +89,7 @@ class ShareCaptureActivity : ComponentActivity() {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     val shot = savedShot!!
                     val jpeg = compressForAi(shot)
-                    AiRecognizer.recognize(cfg.baseUrl, cfg.apiKey, cfg.model, jpeg)
+                    AiClient.vision(this@ShareCaptureActivity, jpeg)
                 }
             }.getOrNull()
             aiState = if (aiResult != null) AiState.DONE else AiState.FAILED
@@ -159,13 +157,7 @@ class ShareCaptureActivity : ComponentActivity() {
                     )
                 }
                 else -> {
-                    if (savedShot != null && !cfg.ready) {
-                        Text(
-                            "提示：在「我的 → AI 识别设置」配置多模态模型后，可自动识别金额与商户",
-                            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
-                        )
-                    } else if (aiState == AiState.FAILED) {
+                    if (aiState == AiState.FAILED) {
                         Text(
                             "AI 识别失败，已切换为手动填写",
                             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,

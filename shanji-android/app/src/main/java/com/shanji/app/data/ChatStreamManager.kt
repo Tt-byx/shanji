@@ -240,16 +240,29 @@ object ChatStreamManager {
                 Status.DONE
             }
         }
+        // 结构化卡片（act JSON 的 card 字段）随正文持久化成 #CARD# 行：
+        // 切走/重进会话仍能渲染，渲染时该行从 Markdown 正文中剥离
+        val cardJson = if (status == Status.DONE) snap.act?.let { extractCard(it) } else null
+        if (cardJson != null) text = text.trimEnd() + "\n#CARD#" + cardJson
         var persisted = false
-        if (status != Status.DONE || snap.text.isNotBlank()) {
+        if (status != Status.DONE || snap.text.isNotBlank() || cardJson != null) {
             persisted = persistOnce(context, snap.conversationId, messageId, text.trim())
         }
         clearPending(context, messageId)
-        android.util.Log.d("SHANJI", "stream finish id=${messageId.take(8)} status=$status len=$text.length")
+        android.util.Log.d("SHANJI", "stream finish id=${messageId.take(8)} status=$status len=$text.length card=${cardJson != null}")
         _snapshots.update { m ->
             m[messageId]?.let { m + (messageId to it.copy(text = text, status = status, persisted = persisted)) } ?: m
         }
     }
+
+    /** 从 #ACT# JSON 里取出 card 对象并紧凑序列化；没有 card 返回 null */
+    private fun extractCard(act: String): String? = runCatching {
+        val el = kotlinx.serialization.json.Json.parseToJsonElement(act)
+        val card = (el as? kotlinx.serialization.json.JsonObject)?.get("card") ?: return null
+        kotlinx.serialization.json.Json.encodeToString(
+            kotlinx.serialization.json.JsonElement.serializer(), card
+        )
+    }.getOrNull()
 
     /** 幂等落库：messageId 作主键，已存在则跳过（保 createdAt 不被 REPLACE 冲掉顺序） */
     private suspend fun persistOnce(context: Context, convId: String, messageId: String, text: String): Boolean {
