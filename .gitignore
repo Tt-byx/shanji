@@ -35,3 +35,5 @@ shanji-android/sdk/
 .env.local
 docker-compose.override.yml
 shanji-app.tar
+
+doc/
