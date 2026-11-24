@@ -37,3 +37,4 @@ docker-compose.override.yml
 shanji-app.tar
 
 doc/
+.tmp/

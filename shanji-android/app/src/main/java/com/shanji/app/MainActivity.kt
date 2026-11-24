@@ -71,6 +71,8 @@ fun MainApp() {
     var chatPresetAmount by remember { mutableStateOf<Double?>(null) }
     var chatPresetMerchant by remember { mutableStateOf("") }
     var chatPresetCategory by remember { mutableStateOf("") }
+    // 首页「记一笔」继承浏览月份的时间预填（当前月 = null → 用现在）
+    var chatPresetDateTime by remember { mutableStateOf<java.time.LocalDateTime?>(null) }
 
     // 系统返回键：子页面返回上级，根页面退出（AI 是 tab，返回回首页）
     androidx.activity.compose.BackHandler(enabled = screen in setOf("search", "calendar", "recurring", "login", "chat")) {
@@ -132,13 +134,18 @@ fun MainApp() {
                 "account" -> AccountsScreen(onTransfer = {
                     editingId = null; recordType = "transfer"; showRecord = true
                 })
-                "search" -> SearchScreen(onBack = { screen = "home" })
+                "search" -> SearchScreen(
+                    onBack = { screen = "home" },
+                    // 搜索结果可点：直接进编辑弹层（P0-1.3）
+                    onEdit = { id -> editingId = id; showRecord = true }
+                )
                 "chat" -> ChatScreen(
                     onAddTx = { amount, merchant, cat, type ->
                         // 对话里说「记一笔」→ 打开记账弹层预填
                         chatPresetAmount = amount
                         chatPresetMerchant = merchant
                         chatPresetCategory = cat
+                        chatPresetDateTime = null // AI 记账按「现在」，不继承浏览月份
                         editingId = null
                         recordType = type
                         showRecord = true
@@ -158,7 +165,14 @@ fun MainApp() {
                 else -> HomeScreen(
                     onEdit = { id -> editingId = id; showRecord = true },
                     onSearch = { screen = "search" },
-                    onAdd = { editingId = null; recordType = "expense"; showRecord = true }
+                    onAdd = { ym ->
+                        // 记一笔继承当前浏览月份：浏览历史月时新账单落到该月（P0-1.4）
+                        val now = java.time.LocalDateTime.now()
+                        chatPresetDateTime = if (ym == java.time.YearMonth.now()) null
+                        else ym.atDay(kotlin.math.min(now.dayOfMonth, ym.lengthOfMonth()))
+                            .atTime(now.toLocalTime())
+                        editingId = null; recordType = "expense"; showRecord = true
+                    }
                 )
             }
         }
@@ -171,9 +185,11 @@ fun MainApp() {
             presetAmount = chatPresetAmount,
             presetMerchant = chatPresetMerchant,
             presetCategory = chatPresetCategory,
+            presetDateTime = chatPresetDateTime,
             onDismiss = {
                 showRecord = false; editingId = null; recordType = "expense"
                 chatPresetAmount = null; chatPresetMerchant = ""; chatPresetCategory = ""
+                chatPresetDateTime = null
             }
         )
     }

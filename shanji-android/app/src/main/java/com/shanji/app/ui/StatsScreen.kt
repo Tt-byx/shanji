@@ -36,6 +36,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -59,6 +60,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import kotlinx.coroutines.launch
 import java.time.YearMonth
 
@@ -94,20 +97,35 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
         if (isWeek) emptyList() else Ledger.insights(txs, ym)
     }
 
-    // AI 洞察：规则命中改写成人话；失败降级回规则文案（本地已有的）
+    // AI 洞察：带缓存（同月同数据版本不重复调用——原来每次进页都重调一次）；
+    // 骨架屏 → 淡入，不再规则文案整块跳变成 AI 文案
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var aiInsight by remember { mutableStateOf<String?>(null) }
+    var aiLoading by remember { mutableStateOf(true) } // 首帧即骨架，避免规则文案闪现
+    var insightTick by remember { mutableStateOf(0) }  // 「重新生成」自增打破缓存
     val persona = remember {
         ctx.getSharedPreferences("shanji_prefs", android.content.Context.MODE_PRIVATE)
             .getString("ai_persona", null)
     }
-    androidx.compose.runtime.LaunchedEffect(ym, insights.size) {
-        if (insights.isEmpty() || isWeek) return@LaunchedEffect
-        aiInsight = runCatching {
+    androidx.compose.runtime.LaunchedEffect(ym, dataVersion, insightTick) {
+        if (insights.isEmpty() || isWeek) { aiLoading = false; return@LaunchedEffect }
+        val cacheKey = "insight_${ym}_$dataVersion"
+        if (insightTick == 0) {
+            com.shanji.app.data.MonthlyReportStore.get(ctx, cacheKey)?.let {
+                aiInsight = it; aiLoading = false; return@LaunchedEffect
+            }
+        }
+        aiLoading = true
+        val r = runCatching {
             val stats = "本月支出¥${fmtAmount(summary.expense)}、收入¥${fmtAmount(summary.income)}；" +
                 cats.take(5).joinToString("、") { "${it.cat.label}¥${fmtAmount(it.amount)}" }
             com.shanji.app.data.AiClient.insight(ctx, "insight", insights, stats, persona)
-        }.getOrNull()
+        }
+        r.getOrNull()?.let {
+            aiInsight = it
+            com.shanji.app.data.MonthlyReportStore.put(ctx, cacheKey, it)
+        }
+        aiLoading = false
     }
 
     // 月度报告：有缓存直接看，没有就现生成
@@ -201,6 +219,59 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
 
         Spacer(Modifier.height(14.dp))
 
+        // 洞察卡：结论应在数据上面（原在分类占比下方）；标题「✨ 本月洞察」+ 重新生成；
+        // 骨架屏加载 → AI 文案淡入，失败降级回规则文案
+        if (!isWeek && (insights.isNotEmpty() || aiLoading)) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            ) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("✨ 本月洞察", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            "重新生成", fontSize = 12.sp, color = Primary,
+                            modifier = Modifier
+                                .clickable { insightTick++ }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    when {
+                        aiLoading -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // 骨架屏：三条占位条，AI 返回后淡入替换
+                            repeat(3) { i ->
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth(if (i == 2) 0.6f else 0.9f)
+                                        .height(13.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceVariant,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                )
+                            }
+                        }
+                        !aiInsight.isNullOrBlank() -> {
+                            val fade = remember(aiInsight) { androidx.compose.animation.core.Animatable(0f) }
+                            androidx.compose.runtime.LaunchedEffect(aiInsight) { fade.animateTo(1f, tween(400)) }
+                            Column(Modifier.alpha(fade.value)) {
+                                aiInsight!!.lines().filter { it.isNotBlank() }.forEach {
+                                    Text("· $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, lineHeight = 20.sp)
+                                }
+                            }
+                        }
+                        else -> insights.forEach {
+                            Text("· $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, lineHeight = 20.sp)
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+        }
+
         // 趋势图卡
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -257,22 +328,6 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
 
         Spacer(Modifier.height(14.dp))
 
-        // 洞察卡：AI 文案优先，失败/未返回时显示规则文案
-        val insightLines = when {
-            !aiInsight.isNullOrBlank() -> aiInsight!!.lines().filter { it.isNotBlank() }
-            else -> insights
-        }
-        if (!isWeek && insightLines.isNotEmpty()) {
-            Column(
-                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(16.dp)).padding(14.dp)
-            ) {
-                insightLines.forEach {
-                    Text("· $it", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, lineHeight = 20.sp)
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-        }
-
         // 月度报告
         if (!isWeek) {
             var showReport by remember { mutableStateOf(false) }
@@ -316,17 +371,41 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
 private fun BarChart(points: List<com.shanji.app.data.TrendPoint>) {
     val max = (points.maxOfOrNull { it.expense } ?: 1.0).coerceAtLeast(1.0)
     Column {
+        // 数值行：每根柱子头顶标金额（>=1000 取整避免过宽；空月显示 —）
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            points.forEach { p ->
+                Text(
+                    if (p.expense <= 0) "—"
+                    else if (p.expense >= 1000) "¥%,.0f".format(p.expense)
+                    else "¥" + fmtAmount(p.expense),
+                    fontSize = 9.sp, fontFamily = FontFamily.Monospace,
+                    color = if (p.isCurrent) Primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.width(44.dp),
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
         Row(
             Modifier.fillMaxWidth().height(84.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.Bottom
         ) {
             points.forEach { p ->
-                val h = (4 + (p.expense / max * 70)).dp
-                Box(
-                    Modifier.width(16.dp).height(h)
-                        .background(if (p.isCurrent) Primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(5.dp))
-                )
+                // 空月不画小灰条（易被误读成「花了很少」），只留底部 —
+                if (p.expense > 0) {
+                    val h = (4 + (p.expense / max * 70)).dp
+                    Box(
+                        Modifier.width(16.dp).height(h)
+                            .background(if (p.isCurrent) Primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(5.dp))
+                    )
+                } else {
+                    Box(Modifier.width(16.dp).height(4.dp))
+                }
             }
         }
         Row(
@@ -337,7 +416,7 @@ private fun BarChart(points: List<com.shanji.app.data.TrendPoint>) {
                 Text(
                     p.label, fontSize = 10.sp,
                     color = if (p.isCurrent) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.width(40.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    modifier = Modifier.width(44.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
         }

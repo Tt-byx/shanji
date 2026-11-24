@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -51,7 +52,7 @@ import androidx.compose.material.icons.filled.Add
 import java.time.YearMonth
 
 @Composable
-fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () -> Unit = {}) {
+fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: (YearMonth) -> Unit = {}) {
     val txs = AppStore.store.txs
     var viewYm by remember { mutableStateOf(YearMonth.now()) }
     val isCurrent = viewYm == YearMonth.now()
@@ -61,7 +62,8 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () ->
     val summary = remember(viewYm, dataVersion) { Ledger.monthSummary(txs, viewYm) }
     val groups = remember(viewYm, dataVersion) { Ledger.dailyGroups(txs, viewYm) }
 
-    Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(horizontal = 20.dp)) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
         // 页头
         Row(
             Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 16.dp),
@@ -71,14 +73,16 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () ->
             IconButton(onClick = onSearch) {
                 Icon(Icons.Filled.Search, "搜索", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            IconButton(onClick = onAdd) {
-                Icon(Icons.Filled.Add, "记一笔", tint = MaterialTheme.colorScheme.primary)
-            }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = { viewYm = viewYm.minusMonths(1) }) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "上个月", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text("${viewYm.monthValue}月", fontSize = 14.sp, modifier = Modifier.width(40.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            // 月份标签带年份（跨年可区分）；宽度自适应不再锁死 40dp
+            Text(
+                if (viewYm.year == YearMonth.now().year) "${viewYm.monthValue}月"
+                else "${viewYm.year}年${viewYm.monthValue}月",
+                fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
             IconButton(onClick = { if (!isCurrent) viewYm = viewYm.plusMonths(1) }, enabled = !isCurrent) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "下个月", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -91,7 +95,13 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () ->
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
         ) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                Text("本月支出", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // 标题跟随浏览月份（切到历史月不再显示「本月支出 ¥0.00」）
+                Text(
+                    if (isCurrent) "本月支出"
+                    else if (viewYm.year == YearMonth.now().year) "${viewYm.monthValue}月支出"
+                    else "${viewYm.year}年${viewYm.monthValue}月支出",
+                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Text(
                     "¥ ${fmtAmount(summary.expense)}",
                     fontSize = 30.sp, fontWeight = FontWeight.Bold,
@@ -139,7 +149,7 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () ->
                 )
                 Spacer(Modifier.height(16.dp))
                 Button(
-                    onClick = onAdd,
+                    onClick = { onAdd(viewYm) },
                     shape = RoundedCornerShape(24.dp),
                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
                         containerColor = com.shanji.app.ui.theme.Primary
@@ -168,9 +178,23 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: () ->
                         }
                     }
                 }
-                item { Spacer(Modifier.height(8.dp)) }
+                item { Spacer(Modifier.height(72.dp)) } // 给悬浮 FAB 留位，避免遮住最后一笔
             }
         }
+    }
+
+    // 悬浮「记一笔」FAB：列表滚动时入口不再消失，记账继承当前浏览月份
+    FloatingActionButton(
+        onClick = { onAdd(viewYm) },
+        shape = RoundedCornerShape(16.dp),
+        containerColor = com.shanji.app.ui.theme.Primary,
+        contentColor = Color.White,
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(end = 20.dp, bottom = 20.dp)
+    ) {
+        Icon(Icons.Filled.Add, "记一笔")
+    }
     }
 }
 

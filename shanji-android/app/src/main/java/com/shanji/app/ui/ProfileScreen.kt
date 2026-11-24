@@ -19,8 +19,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -209,7 +207,7 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("周期记账") { onRecurring() }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("AI 识别设置") { showAiSettings = true }
+                MenuItem("AI 助手") { showAiSettings = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("载入演示数据") { confirmDemo = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
@@ -381,18 +379,14 @@ private fun MenuItem(label: String, danger: Boolean = false, onClick: () -> Unit
     }
 }
 
-/** AI 识别设置：OpenAI 兼容多模态接口（智谱 GLM-4V / 通义 qwen-vl / Kimi 等），支持一键测试连接 */
+/**
+ * AI 助手：只保留「说话风格」（作用于对话/洞察/月报，走服务器中转零配置）。
+ * 原「接口地址/API Key/模型名」三件套是废弃的端侧识别配置——文本 AI 从不读它，
+ * 图片识别也已确定走服务器，留着只会让用户白填一次 401（见优化建议 2.1/3.8）。
+ */
 @androidx.compose.runtime.Composable
 private fun AiSettingsDialog(onDismiss: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val cfg = com.shanji.app.data.AiSettings.load(context)
-    var baseUrl by remember { mutableStateOf(cfg.baseUrl) }
-    var apiKey by remember { mutableStateOf(cfg.apiKey) }
-    var model by remember { mutableStateOf(cfg.model) }
-    var testing by remember { mutableStateOf(false) }
-    var testOk by remember { mutableStateOf<Boolean?>(null) }
-    var testMsg by remember { mutableStateOf<String?>(null) }
     // AI 人设（作用于对话/洞察/月报）
     var persona by remember {
         mutableStateOf(
@@ -402,10 +396,10 @@ private fun AiSettingsDialog(onDismiss: () -> Unit) {
     }
 
     AlertDialog(
-        onDismissRequest = { if (!testing) onDismiss() },
-        title = { Text("AI 识别设置") },
+        onDismissRequest = onDismiss,
+        title = { Text("AI 助手") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            Column {
                 Text("说话风格", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -431,77 +425,15 @@ private fun AiSettingsDialog(onDismiss: () -> Unit) {
                     }
                 }
                 Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = baseUrl,
-                    onValueChange = { baseUrl = it; testMsg = null },
-                    label = { Text("接口地址") },
-                    placeholder = { Text("https://open.bigmodel.cn/api/paas/v4") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                Text(
+                    "对话、统计洞察、月报均由服务器 AI 生成，无需任何配置。",
+                    fontSize = 12.sp, lineHeight = 17.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it; testMsg = null },
-                    label = { Text("API Key") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = model,
-                    onValueChange = { model = it; testMsg = null },
-                    label = { Text("模型名") },
-                    placeholder = { Text("glm-4v-flash") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(10.dp))
-
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    TextButton(
-                        onClick = {
-                            if (testing) return@TextButton
-                            // 先保存再测试，保证测试的就是用户当前填写的内容
-                            com.shanji.app.data.AiSettings.save(context, baseUrl, apiKey, model)
-                            testing = true; testMsg = null; testOk = null
-                            scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                                val report = com.shanji.app.data.AiRecognizer.testConnection(baseUrl.trim(), apiKey.trim(), model.trim())
-                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    testing = false; testOk = report.ok; testMsg = report.message
-                                }
-                            }
-                        }
-                    ) {
-                        Text(if (testing) "测试中…" else "测试连接", color = com.shanji.app.ui.theme.Primary)
-                    }
-                    if (testing) {
-                        Spacer(Modifier.width(8.dp))
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = com.shanji.app.ui.theme.Primary)
-                    }
-                }
-                testMsg?.let { msg ->
-                    Text(
-                        msg, fontSize = 12.sp, lineHeight = 17.sp,
-                        color = if (testOk == true) com.shanji.app.ui.theme.Green
-                                else com.shanji.app.ui.theme.Red,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
             }
         },
         confirmButton = {
-            TextButton(
-                enabled = !testing,
-                onClick = {
-                    com.shanji.app.data.AiSettings.save(context, baseUrl, apiKey, model)
-                    android.widget.Toast.makeText(context, "已保存 AI 识别配置", android.widget.Toast.LENGTH_SHORT).show()
-                    onDismiss()
-                }
-            ) { Text("保存") }
-        },
-        dismissButton = {
-            TextButton(enabled = !testing, onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text("完成") }
         }
     )
 }
