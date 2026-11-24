@@ -1,6 +1,7 @@
 package com.shanji.app
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
@@ -49,7 +50,12 @@ import com.shanji.app.ui.StatsScreen
 import com.shanji.app.ui.theme.Primary
 import com.shanji.app.ui.theme.ShanJiTheme
 
+/** 通知深链请求：id 每次自增，即使目标页相同也能触发 Compose 侧跳转 */
+data class NavReq(val id: Int, val target: String)
+
 class MainActivity : FragmentActivity() {
+
+    private val navReq = androidx.compose.runtime.mutableStateOf(NavReq(0, "home"))
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,20 +70,30 @@ class MainActivity : FragmentActivity() {
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
             }
         }
+        navReq.value = NavReq(navReq.value.id + 1, intent?.getStringExtra("nav") ?: "home")
         setContent {
             ShanJiTheme {
-                MainApp(startScreen = intent?.getStringExtra("nav") ?: "home")
+                MainApp(navReq)
             }
         }
+    }
+
+    /** App 在栈顶时点通知走这里（singleTop）：不重写的话 nav 被静默丢弃，用户停在原页面 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        navReq.value = NavReq(navReq.value.id + 1, intent.getStringExtra("nav") ?: "home")
     }
 }
 
 private data class TabItem(val key: String, val label: String, val icon: ImageVector)
 
 @Composable
-fun MainApp(startScreen: String = "home") {
-    // 通知点进来的目标页（周报 → AI Tab），其余情况从首页开始
-    var screen by remember { mutableStateOf(startScreen) }
+fun MainApp(nav: androidx.compose.runtime.State<NavReq>) {
+    // 通知点进来的目标页（周报 → AI Tab），其余情况从首页开始；
+    // nav 变化（含 App 在栈顶时收到的新通知）→ 跳到目标页
+    var screen by remember { mutableStateOf(nav.value.target) }
+    androidx.compose.runtime.LaunchedEffect(nav.value) { screen = nav.value.target }
     var showRecord by remember { mutableStateOf(false) }
     var editingId by remember { mutableStateOf<String?>(null) }
     var recordType by remember { mutableStateOf("expense") }

@@ -132,6 +132,8 @@ fun RecordSheet(
     }
     var showTimeSheet by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // 删除是不可逆操作，且入口和标题并排容易误触 → 二次确认
+    var confirmDelete by remember { mutableStateOf(false) }
     val accountList = com.shanji.app.data.AppStore.accounts.list
     var accountId by remember {
         mutableStateOf(editing?.accountId ?: com.shanji.app.data.AppStore.accounts.defaultId())
@@ -205,9 +207,7 @@ fun RecordSheet(
                 if (editing != null) {
                     Text(
                         "删除", fontSize = 14.sp, color = Red,
-                        modifier = Modifier.clickable {
-                            store.remove(editing.id); onDismiss()
-                        }
+                        modifier = Modifier.clickable { confirmDelete = true }
                     )
                 }
             }
@@ -532,6 +532,30 @@ fun RecordSheet(
                 }
             }
         }
+    }
+
+    // 删除二次确认：误触「删除」不再直接抹掉账单
+    if (confirmDelete && editing != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除这笔账单？") },
+            text = {
+                Text(
+                    "「${editing.merchant} ¥${fmtAmount(editing.amount)}」删除后不可恢复，确定删除？",
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    store.remove(editing.id)
+                    onDismiss()
+                }) { Text("删除", color = Red) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("取消") }
+            }
+        )
     }
 }
 

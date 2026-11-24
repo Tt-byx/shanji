@@ -40,8 +40,8 @@ object ProactiveAi {
     private const val ID_WEEKLY = 5101
     private const val ID_OVER_TOTAL = 5102
     private const val ID_UNCAT = 5103
-    private const val ID_CAT_BASE = 5200   // + 分类序号
-    private const val ID_DUE_BASE = 5300   // + 订阅 id hash
+    private const val ID_CAT_BASE = 5200   // + 分类在 Categories.all 里的固定下标（增删分类预算不会漂移）
+    private const val ID_DUE_BASE = 6000   // + 订阅名 hash（与分类通知号段隔开，避免互相覆盖）
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -120,22 +120,24 @@ object ProactiveAi {
 
         val db = AppDatabase.getInstance(context)
         val txs = db.txDao().listAll().map { it.toDomain() }
-        val (cur, prev, diff) = Ledger.weekOverWeek(txs)
+        // 周报回顾的是「上周一~上周日」：周一早上推的时候本周才过了几小时，比不出结论
+        val (cur, prev, diff) = Ledger.lastWeekOverWeek(txs)
         if (cur <= 0 && prev <= 0) return   // 没数据不打扰
 
         val ym = YearMonth.now()
         val monthSpent = BudgetCalc.spentTotal(txs, ym)
         val totalBudget = db.budgetDao().listAll().map { it.toDomain() }
             .firstOrNull { it.scope == "total" }?.amount ?: 0.0
-        val top = Ledger.categoryBreakdown(Ledger.monthTx(txs, ym)).firstOrNull()
+        val (ws, we) = Ledger.weekRange(LocalDate.now().minusDays(7))
+        val top = Ledger.categoryBetween(txs, ws, we).firstOrNull()
 
         val stats = buildString {
-            append("本周支出¥").append(fmtAmount(cur))
-            append("，上周¥").append(fmtAmount(prev))
+            append("上周支出¥").append(fmtAmount(cur))
+            append("，前一周¥").append(fmtAmount(prev))
             append(if (diff >= 0) "，多花¥" else "，少花¥").append(fmtAmount(kotlin.math.abs(diff)))
             append('\n')
             if (top != null) {
-                append("本月最大头：").append(top.cat.label).append('¥')
+                append("上周最大头：").append(top.cat.label).append('¥')
                 append(fmtAmount(top.amount)).append("（占").append(top.pct).append("%）\n")
             }
             if (totalBudget > 0) {
@@ -144,22 +146,23 @@ object ProactiveAi {
             }
         }
         val ai = askAi(context, "weekly_report", stats)
-        p.edit().putString("lastWeekly", today).apply()
-        notify(
-            context, ID_WEEKLY, "本周账单周报",
+        // marker 在通知真正发出去之后才写：没通知权限时先写 marker 会永久静默
+        val ok = notify(
+            context, ID_WEEKLY, "上周账单周报",
             (ai ?: fallbackWeekly(cur, prev, diff, top)).trim(),
             nav = "chat"
         )
+        if (ok) p.edit().putString("lastWeekly", today).apply()
     }
 
     private fun fallbackWeekly(cur: Double, prev: Double, diff: Double, top: CatShare?): String {
         val trend = when {
-            prev <= 0 -> "上周没有支出记录可比"
-            diff > 0 -> "比上周多花 ¥${fmtAmount(diff)}"
-            else -> "比上周少花 ¥${fmtAmount(-diff)}"
+            prev <= 0 -> "前一周没有支出记录可比"
+            diff > 0 -> "比前一周多花 ¥${fmtAmount(diff)}"
+            else -> "比前一周少花 ¥${fmtAmount(-diff)}"
         }
         val head = top?.let { "，最大头是「${it.cat.label}」¥${fmtAmount(it.amount)}" } ?: ""
-        return "本周花了 ¥${fmtAmount(cur)}，$trend$head。"
+        return "上周花了 ¥${fmtAmount(cur)}，$trend$head。"
     }
 
     /* ---------------- 每天：超支 / 待归类 / 订阅到期 ---------------- */
@@ -177,25 +180,25 @@ object ProactiveAi {
         val totalBudget = budgets.firstOrNull { it.scope == "total" }?.amount ?: 0.0
         val monthSpent = BudgetCalc.spentTotal(txs, ym)
         if (totalBudget > 0 && monthSpent > totalBudget * 1.1 && p.getString("over_total", "") != ymKey) {
-            p.edit().putString("over_total", ymKey).apply()
             val over = monthSpent - totalBudget
             val stats = "本月总预算¥${fmtAmount(totalBudget)}，已花¥${fmtAmount(monthSpent)}，超¥${fmtAmount(over)}。" +
                 "本月分类支出：" + Ledger.categoryBreakdown(Ledger.monthTx(txs, ym))
                     .joinToString("、") { "${it.cat.label}¥${fmtAmount(it.amount)}" }
             val ai = askAi(context, "budget_over", stats)
-            notify(
+            // marker 在通知真正发出去之后才写：没通知权限时先写 marker 会永久静默
+            val ok = notify(
                 context, ID_OVER_TOTAL, "⚠ 本月总预算已超 ¥${fmtAmount(over)}",
                 (ai ?: "已花 ¥${fmtAmount(monthSpent)} / 预算 ¥${fmtAmount(totalBudget)}，先停一停非必要支出。").trim()
             )
+            if (ok) p.edit().putString("over_total", ymKey).apply()
         }
 
         // 2) 分类预算超支 10% → 每月每类一次
-        budgets.filter { it.scope == "category" && it.amount > 0 }.forEachIndexed { i, b ->
+        budgets.filter { it.scope == "category" && it.amount > 0 }.forEach { b ->
             val spent = BudgetCalc.spentOf(txs, ym, b.category)
-            if (spent <= b.amount * 1.1) return@forEachIndexed
+            if (spent <= b.amount * 1.1) return@forEach
             val key = "over_${b.category}"
-            if (p.getString(key, "") == ymKey) return@forEachIndexed
-            p.edit().putString(key, ymKey).apply()
+            if (p.getString(key, "") == ymKey) return@forEach
             val label = Categories.of(b.category).label
             val over = spent - b.amount
             val ai = askAi(
@@ -203,20 +206,23 @@ object ProactiveAi {
                 "${label}预算¥${fmtAmount(b.amount)}，本月已花¥${fmtAmount(spent)}，超¥${fmtAmount(over)}。" +
                     "给出一条最能省下这笔的建议，20字以内。"
             )
-            notify(
-                context, ID_CAT_BASE + i, "⚠ ${label}超支 ¥${fmtAmount(over)}",
+            // 通知 id 用分类的固定下标：原来用 forEachIndexed 下标，增删分类预算后 id 漂移互相顶掉
+            val catIdx = Categories.all.indexOfFirst { it.key == b.category }.coerceAtLeast(0)
+            val ok = notify(
+                context, ID_CAT_BASE + catIdx, "⚠ ${label}超支 ¥${fmtAmount(over)}",
                 (ai ?: "已花 ¥${fmtAmount(spent)} / 预算 ¥${fmtAmount(b.amount)}，${label}这月得收着点。").trim()
             )
+            if (ok) p.edit().putString(key, ymKey).apply()
         }
 
         // 3) 没分类的账单攒多了 → 提醒用 AI 批量归类
         val uncat = Ledger.monthTx(txs, ym).count { it.type == "expense" && it.category == "other" }
         if (uncat >= 3 && p.getString("uncat", "") != ymKey) {
-            p.edit().putString("uncat", ymKey).apply()
-            notify(
+            val ok = notify(
                 context, ID_UNCAT, "本月有 $uncat 笔账单归到了「其他」",
                 "打开 AI 问账本，让它按你的习惯重新分分类。", nav = "chat"
             )
+            if (ok) p.edit().putString("uncat", ymKey).apply()
         }
 
         // 4) 订阅明天/今天扣款 → 提醒
@@ -224,32 +230,39 @@ object ProactiveAi {
             val marker = date.toString()
             val key = "due_${sub.id}"
             if (p.getString(key, "") == marker) return@forEach
-            p.edit().putString(key, marker).apply()
             val whenText = if (date == LocalDate.now()) "今天" else "明天"
-            notify(
+            // 通知 id 用订阅名 hash（稳定且与分类号段隔离），不用会碰撞的 id hash
+            val ok = notify(
                 context,
-                ID_DUE_BASE + (sub.id.hashCode().and(0x3ff)),
+                ID_DUE_BASE + (sub.name.hashCode().and(0x3ff)),
                 "「${sub.name}」${whenText}扣款 ¥${fmtAmount(sub.amount)}",
                 "每月${sub.dayOfMonth}号 · ${Categories.of(sub.category).label} · 上次识别约¥${fmtAmount(sub.amount)}/月"
             )
+            if (ok) p.edit().putString(key, marker).apply()
         }
     }
 
     /* ---------------- AI 文案（超时就退回本地规则文案） ---------------- */
 
+    private fun persona(context: Context): String? =
+        context.getSharedPreferences("shanji_prefs", Context.MODE_PRIVATE)
+            .getString("ai_persona", null)
+
     private suspend fun askAi(context: Context, kind: String, stats: String): String? =
-        withTimeoutOrNull(8_000) {
-            runCatching { AiClient.insight(context, kind, emptyList(), stats) }.getOrNull()
+        // 15s：服务端实测 AI 耗时 3.2~8.7s，8s 会把已计费的调用掐掉、白拿模板文案
+        withTimeoutOrNull(15_000) {
+            runCatching { AiClient.insight(context, kind, emptyList(), stats, persona(context)) }.getOrNull()
         }?.takeIf { it.isNotBlank() }
 
     /* ---------------- 通知 ---------------- */
 
-    private fun notify(context: Context, id: Int, title: String, text: String, nav: String? = null) {
-        if (!enabled(context)) return
+    /** @return true=通知真的发出去了（调用方据此决定要不要写 marker） */
+    private fun notify(context: Context, id: Int, title: String, text: String, nav: String? = null): Boolean {
+        if (!enabled(context)) return false
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
-        ) return
+        ) return false
 
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -273,6 +286,6 @@ object ProactiveAi {
             .setContentIntent(pi)
             .setAutoCancel(true)
             .build()
-        runCatching { nm.notify(id, n) }
+        return runCatching { nm.notify(id, n); true }.getOrDefault(false)
     }
 }

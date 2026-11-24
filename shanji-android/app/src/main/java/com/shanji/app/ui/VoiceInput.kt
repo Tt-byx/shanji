@@ -80,9 +80,10 @@ class VoiceInput(private val context: Context) {
         }
 
         override fun onEndOfSpeech() {
-            // 结果还没回来，只把 UI 的「录音中」收掉
-            listening = false
-            onStateChange(false)
+            // 正常顺序是 onEndOfSpeech →（网络延迟）→ onResults。
+            // 这里不能把 listening 置回 false：UI 会提前显示「没在听」，用户以为没听上而重按，
+            // 此时 startListening 还没收到结果 → ERROR_RECOGNIZER_BUSY。
+            // 保持「处理中」，由 onResults / onError 统一收尾。
         }
 
         override fun onReadyForSpeech(params: Bundle?) {}

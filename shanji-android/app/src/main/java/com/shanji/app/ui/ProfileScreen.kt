@@ -266,52 +266,8 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
     }
 
     if (showBudget) {
-        val budgets = AppStore.budgets
-        var totalText by remember {
-            mutableStateOf(budgets.total().takeIf { it > 0 }?.let { fmtAmount(it) } ?: "")
-        }
-        val catTexts = remember {
-            androidx.compose.runtime.mutableStateMapOf<String, String>().apply {
-                com.shanji.app.data.Categories.all.forEach { c ->
-                    val v = budgets.ofCategory(c.key)
-                    if (v > 0) put(c.key, fmtAmount(v))
-                }
-            }
-        }
-        AlertDialog(
-            onDismissRequest = { showBudget = false },
-            title = { Text("预算设置") },
-            text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
-                    OutlinedTextField(
-                        value = totalText,
-                        onValueChange = { totalText = it.filter { c -> c.isDigit() || c == '.' }.take(10) },
-                        label = { Text("本月总预算（元）") }, singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    com.shanji.app.data.Categories.all.forEach { c ->
-                        OutlinedTextField(
-                            value = catTexts[c.key] ?: "",
-                            onValueChange = { catTexts[c.key] = it.filter { ch -> ch.isDigit() || ch == '.' }.take(10) },
-                            label = { Text("${c.label}预算（元）") }, singleLine = true,
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    budgets.set("total", "", totalText.toDoubleOrNull() ?: 0.0)
-                    com.shanji.app.data.Categories.all.forEach { c ->
-                        budgets.set("category", c.key, (catTexts[c.key] ?: "").toDoubleOrNull() ?: 0.0)
-                    }
-                    android.widget.Toast.makeText(context, "预算已保存", android.widget.Toast.LENGTH_SHORT).show()
-                    showBudget = false
-                }) { Text("保存") }
-            },
-            dismissButton = { TextButton(onClick = { showBudget = false }) { Text("取消") } }
-        )
+        // 与统计页预算卡空态共用同一份实现（BudgetCard.kt）
+        BudgetDialog(onDismiss = { showBudget = false })
     }
     if (showAiSettings) {
         AiSettingsDialog(onDismiss = { showAiSettings = false })

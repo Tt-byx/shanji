@@ -109,7 +109,13 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
     }
     androidx.compose.runtime.LaunchedEffect(ym, dataVersion, insightTick) {
         if (insights.isEmpty() || isWeek) { aiLoading = false; return@LaunchedEffect }
-        val cacheKey = "insight_${ym}_$dataVersion"
+        // 缓存 key 必须是数据指纹：进程内 version 重启归零会撞上别的时期的旧缓存（同屏两个矛盾数字），
+        // 而且每写一次库 version++ 会让缓存永远不命中、每次进页都白调 AI
+        val fp = txs.fold(0) { h, t ->
+            31 * h + t.id.hashCode() + 37 * t.amount.hashCode() +
+                41 * t.category.hashCode() + 43 * t.ts.hashCode()
+        }
+        val cacheKey = "insight_${ym}_$fp"
         if (insightTick == 0) {
             com.shanji.app.data.MonthlyReportStore.get(ctx, cacheKey)?.let {
                 aiInsight = it; aiLoading = false; return@LaunchedEffect
@@ -123,7 +129,8 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
         }
         r.getOrNull()?.let {
             aiInsight = it
-            com.shanji.app.data.MonthlyReportStore.put(ctx, cacheKey, it)
+            // 同月旧指纹条目一起清掉，避免按指纹无限堆积
+            com.shanji.app.data.MonthlyReportStore.put(ctx, cacheKey, it, clearPrefix = "insight_${ym}_")
         }
         aiLoading = false
     }
@@ -370,53 +377,44 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
 @Composable
 private fun BarChart(points: List<com.shanji.app.data.TrendPoint>) {
     val max = (points.maxOfOrNull { it.expense } ?: 1.0).coerceAtLeast(1.0)
-    Column {
-        // 数值行：每根柱子头顶标金额（>=1000 取整避免过宽；空月显示 —）
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            points.forEach { p ->
+    // 数值/柱子/标签同列（weight 均分）：原来数值行 width(44) 与柱行 width(16) 各自 SpaceEvenly，
+    // 首末列中心错位；周视图 7×44dp 也会超出卡片宽度被裁切
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        points.forEach { p ->
+            Column(
+                Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Text(
                     if (p.expense <= 0) "—"
                     else if (p.expense >= 1000) "¥%,.0f".format(p.expense)
                     else "¥" + fmtAmount(p.expense),
                     fontSize = 9.sp, fontFamily = FontFamily.Monospace,
                     color = if (p.isCurrent) Primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    modifier = Modifier.width(44.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    maxLines = 1
                 )
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        Row(
-            Modifier.fillMaxWidth().height(84.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.Bottom
-        ) {
-            points.forEach { p ->
-                // 空月不画小灰条（易被误读成「花了很少」），只留底部 —
-                if (p.expense > 0) {
-                    val h = (4 + (p.expense / max * 70)).dp
-                    Box(
-                        Modifier.width(16.dp).height(h)
-                            .background(if (p.isCurrent) Primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(5.dp))
-                    )
-                } else {
-                    Box(Modifier.width(16.dp).height(4.dp))
+                Spacer(Modifier.height(4.dp))
+                Box(
+                    Modifier.fillMaxWidth().height(84.dp),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    // 空月不画小灰条（易被误读成「花了很少」），只留底部 —
+                    if (p.expense > 0) {
+                        val h = (4 + (p.expense / max * 70)).dp
+                        Box(
+                            Modifier.width(16.dp).height(h)
+                                .background(if (p.isCurrent) Primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(5.dp))
+                        )
+                    } else {
+                        Box(Modifier.width(16.dp).height(4.dp))
+                    }
                 }
-            }
-        }
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly
-        ) {
-            points.forEach { p ->
                 Text(
                     p.label, fontSize = 10.sp,
-                    color = if (p.isCurrent) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline,
-                    modifier = Modifier.width(44.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    color = if (p.isCurrent) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline
                 )
             }
         }

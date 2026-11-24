@@ -85,6 +85,12 @@ fun RecurringScreen(onBack: () -> Unit) {
 
         if (rules.isEmpty()) {
             Text("还没有周期规则", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "房租 / 话费 / 会员 / 通勤这类固定支出，建个规则后每月到日子自动生成账单，不用再手动记。\n" +
+                    "示例：房租 ¥1500 每月1号 · 话费 ¥50 每月10号",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.outline, lineHeight = 18.sp
+            )
         }
 
         rules.forEach { r ->
@@ -136,7 +142,7 @@ fun RecurringScreen(onBack: () -> Unit) {
 
         if (subs.isEmpty()) {
             Text(
-                "还没有订阅。点下面「AI 识别订阅」，扫一遍历史账单就能认出来。",
+                "还没有订阅。点下面「自动识别订阅」，扫一遍历史账单就能认出来。",
                 fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(10.dp))
@@ -156,9 +162,12 @@ fun RecurringScreen(onBack: () -> Unit) {
                         Text(s.name, fontSize = 15.sp, fontWeight = FontWeight.Medium)
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "每月 ${s.dayOfMonth} 日 · ¥${fmtAmount(s.amount)} · " +
+                            (if (s.cycle == "yearly") "每年${s.dueMonth}月${s.dayOfMonth}日"
+                             else "每月 ${s.dayOfMonth} 日") +
+                                " · ¥${fmtAmount(s.amount)} · " +
                                 Categories.of(s.category).label +
-                                (if (s.source == "ai") " · AI 识别" else " · 手动"),
+                                // 实际是本地规则检测，文案不能承诺 AI（同「AI 识别设置」改名的教训）
+                                (if (s.source == "ai") " · 自动识别" else " · 手动"),
                             fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -188,7 +197,7 @@ fun RecurringScreen(onBack: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    if (detecting) "识别中…" else "+ AI 识别订阅",
+                    if (detecting) "识别中…" else "+ 自动识别订阅",
                     fontSize = 15.sp, color = Primary, fontWeight = FontWeight.Medium
                 )
             }
@@ -241,16 +250,20 @@ fun RecurringScreen(onBack: () -> Unit) {
         )
     }
 
-    // 手动添加订阅
+    // 手动添加订阅（可选每月/每年）
     if (showAddSub) RecurringDialog(
         title = "新增订阅",
-        onConfirm = { _, amount, merchant, cat, day ->
+        showCycle = true,
+        onConfirm = { _, amount, merchant, cat, day, cycle, dueMonth ->
             AppStore.subscriptions.add(
                 Subscription(
                     id = "sub_" + java.util.UUID.randomUUID().toString().take(8),
                     name = merchant, amount = amount, category = cat,
-                    accountId = AppStore.accounts.defaultId(), cycle = "monthly",
-                    dayOfMonth = day, source = "manual"
+                    accountId = AppStore.accounts.defaultId(),
+                    cycle = cycle,
+                    dayOfMonth = day,
+                    dueMonth = if (cycle == "yearly") dueMonth else 0,
+                    source = "manual"
                 )
             )
             showAddSub = false
@@ -267,11 +280,17 @@ fun RecurringScreen(onBack: () -> Unit) {
                 category = s.category, accountId = s.accountId, dayOfMonth = s.dayOfMonth,
                 enabled = s.enabled, lastRunDate = ""
             ),
+            showCycle = true,
+            initialCycle = s.cycle,
+            initialDueMonth = s.dueMonth,
             showDelete = true,
-            onConfirm = { _, amount, merchant, cat, day ->
+            onConfirm = { _, amount, merchant, cat, day, cycle, dueMonth ->
                 AppStore.subscriptions.remove(s.id)
                 AppStore.subscriptions.add(
-                    s.copy(name = merchant, amount = amount, category = cat, dayOfMonth = day)
+                    s.copy(
+                        name = merchant, amount = amount, category = cat, dayOfMonth = day,
+                        cycle = cycle, dueMonth = if (cycle == "yearly") dueMonth else 0
+                    )
                 )
                 editingSub = null
             },
@@ -282,7 +301,7 @@ fun RecurringScreen(onBack: () -> Unit) {
 
     if (showAdd) RecurringDialog(
         title = "新增周期规则",
-        onConfirm = { type, amount, merchant, cat, day ->
+        onConfirm = { type, amount, merchant, cat, day, _, _ ->
             store.add(type, amount, merchant, cat, AppStore.accounts.defaultId(), day)
             showAdd = false
         },
@@ -294,7 +313,7 @@ fun RecurringScreen(onBack: () -> Unit) {
             title = "编辑周期规则",
             initial = r,
             showDelete = true,
-            onConfirm = { type, amount, merchant, cat, day ->
+            onConfirm = { type, amount, merchant, cat, day, _, _ ->
                 store.update(r.copy(type = type, amount = amount, merchant = merchant, category = cat, dayOfMonth = day))
                 editing = null
             },
@@ -309,7 +328,10 @@ private fun RecurringDialog(
     title: String,
     initial: Recurring? = null,
     showDelete: Boolean = false,
-    onConfirm: (type: String, amount: Double, merchant: String, category: String, day: Int) -> Unit,
+    showCycle: Boolean = false,
+    initialCycle: String = "monthly",
+    initialDueMonth: Int = 0,
+    onConfirm: (type: String, amount: Double, merchant: String, category: String, day: Int, cycle: String, dueMonth: Int) -> Unit,
     onDelete: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
@@ -318,6 +340,9 @@ private fun RecurringDialog(
     var merchant by remember { mutableStateOf(initial?.merchant ?: "") }
     var category by remember { mutableStateOf(initial?.category ?: "daily") }
     var day by remember { mutableStateOf((initial?.dayOfMonth ?: 1).toString()) }
+    var cycle by remember { mutableStateOf(initialCycle) }
+    var dueMonthText by remember { mutableStateOf(if (initialDueMonth in 1..12) initialDueMonth.toString() else "") }
+    val isYearly = showCycle && cycle == "yearly"
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -341,6 +366,27 @@ private fun RecurringDialog(
                         )
                     }
                 }
+                // 订阅支持按年扣（年费会员/保险），原来只有 monthly，yearly 分支是死代码
+                if (showCycle) {
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
+                        listOf("monthly" to "每月扣", "yearly" to "每年扣").forEach { (c, label) ->
+                            val selected = c == cycle
+                            Text(
+                                label, fontSize = 13.sp,
+                                color = if (selected) androidx.compose.ui.graphics.Color.White
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier
+                                    .background(
+                                        if (selected) Primary else MaterialTheme.colorScheme.surfaceVariant,
+                                        RoundedCornerShape(999.dp)
+                                    )
+                                    .clickable { cycle = c }
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = amountText,
@@ -359,9 +405,19 @@ private fun RecurringDialog(
                 OutlinedTextField(
                     value = day,
                     onValueChange = { day = it.filter { c -> c.isDigit() }.take(2) },
-                    label = { Text("每月几号（1~28）") }, singleLine = true,
+                    label = { Text(if (isYearly) "到期几号（1~31）" else "每月几号（1~31）") },
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (isYearly) {
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = dueMonthText,
+                        onValueChange = { dueMonthText = it.filter { c -> c.isDigit() }.take(2) },
+                        label = { Text("到期月份（1~12）") }, singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 Spacer(Modifier.height(10.dp))
                 Text("分类", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(6.dp))
@@ -388,11 +444,14 @@ private fun RecurringDialog(
             TextButton(
                 enabled = (amountText.toDoubleOrNull() ?: 0.0) > 0 &&
                         merchant.isNotBlank() &&
-                        (day.toIntOrNull() in 1..28),
+                        (day.toIntOrNull() in 1..31) &&
+                        (!isYearly || dueMonthText.toIntOrNull() in 1..12),
                 onClick = {
                     onConfirm(
                         type, amountText.toDoubleOrNull() ?: 0.0, merchant, category,
-                        (day.toIntOrNull() ?: 1).coerceIn(1, 28)
+                        (day.toIntOrNull() ?: 1).coerceIn(1, 31),
+                        cycle,
+                        (dueMonthText.toIntOrNull() ?: 1).coerceIn(1, 12)
                     )
                 }
             ) { Text("保存") }

@@ -256,12 +256,16 @@ public class AiService {
         - budget_set 设预算：{"fn":"budget_set","params":{"scope":"total或category","category":"可选","amount":数字}}
         - subscribe 识别订阅类固定支出：{"fn":"subscribe","params":{}}
         不需要动作时禁止输出 #ACT# 行，直接输出正文。分类 key：dining/transport/shopping/daily/entertainment/health/education/other。
+        硬性规则：
+        - 正文和卡片里的每个数字都必须来自 [上下文]/[对话历史] 或动作返回结果；账本里没有的数字一律不得出现，没有的就说没有，禁止估算或推算。
+        - 订阅 / 周期性固定支出的结论必须来自 subscribe 动作的返回结果，禁止自行推断；动作没返回订阅就说明没有。
         给出分类统计结论且有可操作建议时，在 #ACT# JSON 里额外附带 "card" 字段（用户会看到卡片并可点按钮）：
-        #ACT#{"actions":[],"card":{"title":"购物 ¥678 · 占39% · 6笔","lines":["比上月省 ¥120–150"],"buttons":[{"label":"看看这6笔","fn":"queryTx","params":{"category":"shopping"}},{"label":"设个¥600预算","fn":"budget_set","params":{"scope":"category","category":"shopping","amount":600}}]}}
+        #ACT#{"actions":[],"card":{"title":"购物 ¥{金额} · 占{百分比}% · {笔数}笔","lines":["比上月省 ¥{金额}"],"buttons":[{"label":"看看这{笔数}笔","fn":"queryTx","params":{"category":"shopping"}},{"label":"设个¥{金额}预算","fn":"budget_set","params":{"scope":"category","category":"shopping","amount":{金额}}}]}}
+        示例里的 {金额}/{百分比}/{笔数} 全是占位符，输出时必须替换成上下文里的真实数字，禁止照抄占位符或示例值。
         card 的 buttons 里 fn 只能用 queryTx / budget_set / addTx；没有合适按钮就省略 card。
         正文引用具体数字时，在数字后面紧跟溯源链接，用户点击可查看对应账单：
-        [¥142.21](shanji-trace:category=dining&month=2026-11)
-        上下文里没有的数据不要加链接，更不要编造数字；统计里没有的就说没有。
+        [¥{金额}](shanji-trace:category=dining&month={yyyy-MM})
+        链接里的金额用正文实际数字，category/month 从上下文取；上下文里没有的数据不要加链接。
         """;
 
     public AiDtos.ChatResult chat(AiDtos.ChatRequest req) {
@@ -425,6 +429,7 @@ public class AiService {
         你是记账 App「闪记」的理财小助手，用户是大学生。
         根据给定的规则命中事件和统计数据，生成简短人话洞察。只输出正文，禁止 markdown、禁止标题。
         要求：一句话一个要点，最多 3 条，每条不超过 40 字，带具体数字，给一条可执行的小建议。
+        数字只能来自给定的 [事件]/[统计]，账本里没有的数字不得出现，禁止估算或编造。
         """;
 
     public AiDtos.InsightResult insight(AiDtos.InsightRequest req) {
@@ -435,8 +440,8 @@ public class AiService {
         // 主动式推送的两种任务：明确告诉模型要产出什么，否则它只会泛泛复述统计
         String task = null;
         if ("weekly_report".equals(req.kind())) {
-            task = "这是每周一早上推给用户的周报，写 3 条以内：本周花了多少、比上周多还是少、"
-                + "哪一类花得最多，每条带具体数字，最后一句给个可执行的小建议。";
+            task = "这是每周一早上推给用户的周报，回顾上周（周一到周日，不是刚开始的本周），写 3 条以内："
+                + "上周花了多少、比前一周多还是少、上周哪一类花得最多，每条带具体数字，最后一句给个可执行的小建议。";
         } else if ("budget_over".equals(req.kind())) {
             task = "用户的预算刚被超出，写一条 20 字以内、能立刻执行的省钱建议，带具体数字，不要说教。";
         }

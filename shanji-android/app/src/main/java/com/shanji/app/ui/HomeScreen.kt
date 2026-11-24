@@ -54,7 +54,8 @@ import java.time.YearMonth
 @Composable
 fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: (YearMonth) -> Unit = {}) {
     val txs = AppStore.store.txs
-    var viewYm by remember { mutableStateOf(YearMonth.now()) }
+    // rememberSaveable：切到统计/AI 再回来（或旋转）不丢浏览月份，原来 remember 每次回首页都重置回本月
+    var viewYm by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(YearMonth.now()) }
     val isCurrent = viewYm == YearMonth.now()
 
     // 统计只在 数据版本/月份 变化时重算：其它重组（滚动、状态切换）不再跑 O(n) 分组
@@ -119,11 +120,14 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: (Year
 
         Spacer(Modifier.height(14.dp))
 
-        // 预算超支横幅
+        // 预算超支横幅：文案跟随浏览月份（原来写死「本月」，翻历史月时说的不是屏幕上这笔账）
         val totalBudget = com.shanji.app.data.AppStore.budgets.total()
         if (totalBudget > 0 && summary.expense > totalBudget) {
+            val monthLabel = if (isCurrent) "本月"
+            else if (viewYm.year == YearMonth.now().year) "${viewYm.monthValue}月"
+            else "${viewYm.year}年${viewYm.monthValue}月"
             Text(
-                "⚠ 本月预算已超支 ¥" + fmtAmount(summary.expense - totalBudget) + "，明细见统计页预算卡",
+                "⚠ ${monthLabel}预算已超支 ¥" + fmtAmount(summary.expense - totalBudget) + "，明细见统计页预算卡",
                 fontSize = 13.sp, color = com.shanji.app.ui.theme.Red,
                 lineHeight = 19.sp,
                 modifier = Modifier

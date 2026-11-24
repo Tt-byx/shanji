@@ -28,7 +28,7 @@ object BackupManager {
                     Categories.of(t.category).label,
                     esc(t.note),
                     timeFmt.format(Instant.ofEpochMilli(t.ts).atZone(ZoneId.systemDefault())),
-                    if (t.source == "share") "分享" else "手动"
+                    if (t.source == "share") "分享" else if (t.source == "recurring") "周期" else "手动"
                 ).joinToString(",")
             )
         }

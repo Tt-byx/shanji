@@ -55,8 +55,10 @@ object CategoryLearner {
     }
 
     /**
-     * 预测分类：商户 → 命中金额区间 → 命中时段 → 命中账户，逐级收敛；
-     * 某一级没命中就退回上一级，最后按命中次数取最稳的那条。
+     * 预测分类：商户 → 金额区间 → 时段 → 账户，逐级收敛。
+     * 金额是硬条件：有金额规则但一条都没命中就返回 null，交给 AI 判——
+     * 原来不命中也 `.ifEmpty { same }` 硬兜底一条，本地误判会压掉更可靠的 AI 建议。
+     * 时段/账户是软条件：没命中不否定，只在命中时收敛。
      */
     fun predict(
         context: Context,
@@ -67,19 +69,24 @@ object CategoryLearner {
     ): String? {
         val m = norm(merchant)
         if (m.isEmpty()) return null
-        val same = load(context).filter { it.m == m }
-        if (same.isEmpty()) return null
+        var candidates = load(context).filter { it.m == m }
+        if (candidates.isEmpty()) return null
 
-        val byAmount = same.filter { amount <= 0 || (amount >= it.aLo && amount <= it.aHi) }
-            .ifEmpty { same }
-        val byHour = if (hour in 0..23) {
-            byAmount.filter { hour >= it.hLo && hour <= it.hHi }.ifEmpty { byAmount }
-        } else byAmount
-        val byAcc = if (accountId.isNotEmpty()) {
-            byHour.filter { it.acc.isEmpty() || it.acc == accountId }.ifEmpty { byHour }
-        } else byHour
+        if (amount > 0) {
+            val hit = candidates.filter { amount >= it.aLo && amount <= it.aHi }
+            if (hit.isEmpty()) return null
+            candidates = hit
+        }
+        if (hour in 0..23) {
+            candidates = candidates.filter { hour >= it.hLo && hour <= it.hHi }
+                .ifEmpty { candidates }
+        }
+        if (accountId.isNotEmpty()) {
+            candidates = candidates.filter { it.acc.isEmpty() || it.acc == accountId }
+                .ifEmpty { candidates }
+        }
 
-        return byAcc.maxByOrNull { it.n }?.c
+        return candidates.maxByOrNull { it.n }?.c
     }
 
     /** 保存账单时学习（以用户最终保存的为准）。同商户同分类合并，区间取并集，置信度累加 */
@@ -124,7 +131,12 @@ object CategoryLearner {
                 else -> ""   // 同规则出现过不同账户 → 放宽为不限账户
             }
         )
-        save(context, rest + updated)
+        // 最后一次显式保存优先：同商户其它分类的规则压到新规则之下。
+        // 否则用户把「星巴克」从餐饮改成购物后（购物 n=1、餐饮 n=5），下次预测仍按旧的餐饮给。
+        val capped = rest.map {
+            if (it.m == m) it.copy(n = (updated.n - 1).coerceAtLeast(0)) else it
+        }
+        save(context, capped + updated)
     }
 
     /**

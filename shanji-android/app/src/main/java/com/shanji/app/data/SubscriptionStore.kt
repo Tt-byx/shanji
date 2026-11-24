@@ -28,16 +28,27 @@ data class Subscription(
     val source: String = "ai"        // ai=识别出来的 | manual=手动加的
 )
 
-/** 订阅识别：近 3 个月以上每月都有、金额波动在 ±30% 内的支出 → 疑似订阅（纯本地，不联网） */
+/** 订阅识别：**连续** 3 个月以上每月都有、金额波动在 ±30% 内的支出 → 疑似订阅（纯本地，不联网） */
 object SubscriptionDetector {
 
     fun detect(txs: List<Tx>, existing: Collection<String> = emptyList()): List<Subscription> =
-        txs.filter { it.type == "expense" && it.merchant.isNotBlank() }
+        txs.filter {
+            it.type == "expense" && it.merchant.isNotBlank() &&
+                // 周期记账自动生成的账单不算：房租规则每月生成的账单会被再认成订阅，重复
+                it.source != "recurring"
+        }
             .groupBy { it.merchant.trim() }
             .mapNotNull { (name, list) ->
                 if (name in existing) return@mapNotNull null
-                val months = list.map { YearMonth.from(toLocalDateTime(it.ts)) }.distinct()
-                if (months.size < 3) return@mapNotNull null
+                val months = list.map { YearMonth.from(toLocalDateTime(it.ts)) }.distinct().sorted()
+                // 要求「连续」月份：1月/4月/9月 各一笔不算订阅（UI 文案写的是"连续3个月以上"）
+                var run = 1
+                var best = 1
+                for (i in 1 until months.size) {
+                    run = if (months[i] == months[i - 1].plusMonths(1)) run + 1 else 1
+                    if (run > best) best = run
+                }
+                if (best < 3) return@mapNotNull null
                 val avg = list.map { it.amount }.average()
                 val min = list.minOf { it.amount }
                 val max = list.maxOf { it.amount }
@@ -50,7 +61,8 @@ object SubscriptionDetector {
                     category = last.category,
                     accountId = last.accountId,
                     cycle = "monthly",
-                    dayOfMonth = toLocalDateTime(last.ts).dayOfMonth.coerceIn(1, 28),
+                    // 保留真实日期（29~31 号也行），扣款时按当月实际天数夹取
+                    dayOfMonth = toLocalDateTime(last.ts).dayOfMonth,
                     source = "ai"
                 )
             }
@@ -98,19 +110,26 @@ class SubscriptionStore(context: Context) {
         if (i >= 0) { list[i] = list[i].copy(enabled = enabled); persist() }
     }
 
-    /** 下次扣款日（今天或之后）；yearly 按 dueMonth+dayOfMonth 算 */
+    /** 下次扣款日（今天或之后）；29~31 号按当月实际天数夹取（原来统一压到 28 号，会早 1~3 天提醒） */
     fun nextDue(sub: Subscription, from: LocalDate = LocalDate.now()): LocalDate? {
         if (!sub.enabled) return null
-        val day = sub.dayOfMonth.coerceIn(1, 28)
         return when (sub.cycle) {
             "yearly" -> {
                 val month = sub.dueMonth.coerceIn(1, 12)
-                val thisYear = LocalDate.of(from.year, month, day)
-                if (thisYear.isBefore(from)) LocalDate.of(from.year + 1, month, day) else thisYear
+                val ym = YearMonth.of(from.year, month)
+                val thisYear = ym.atDay(sub.dayOfMonth.coerceAtMost(ym.lengthOfMonth()))
+                if (thisYear.isBefore(from)) {
+                    val nextYm = YearMonth.of(from.year + 1, month)
+                    nextYm.atDay(sub.dayOfMonth.coerceAtMost(nextYm.lengthOfMonth()))
+                } else thisYear
             }
             else -> {
-                val thisMonth = from.withDayOfMonth(day)
-                if (thisMonth.isBefore(from)) from.plusMonths(1).withDayOfMonth(day) else thisMonth
+                val ym = YearMonth.from(from)
+                val thisMonth = ym.atDay(sub.dayOfMonth.coerceAtMost(ym.lengthOfMonth()))
+                if (thisMonth.isBefore(from)) {
+                    val nextYm = ym.plusMonths(1)
+                    nextYm.atDay(sub.dayOfMonth.coerceAtMost(nextYm.lengthOfMonth()))
+                } else thisMonth
             }
         }
     }

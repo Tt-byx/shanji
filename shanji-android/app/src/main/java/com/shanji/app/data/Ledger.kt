@@ -128,6 +128,22 @@ object Ledger {
         return Triple(cur, prev, round2(cur - prev))
     }
 
+    /**
+     * 上周（周一~周日） vs 前一周——周报专用。
+     * 周一早上推送时「本周」才过了几小时，拿它比完整一周会得出误导结论（实测 9 小时 vs 7 天）。
+     */
+    fun lastWeekOverWeek(txs: List<Tx>): Triple<Double, Double, Double> {
+        val (s, e) = weekRange(LocalDate.now().minusDays(7))   // 上周一 ~ 本周一
+        val cur = summary(txs.filter { val t = toLocalDateTime(it.ts); t >= s && t < e }).expense
+        val (ps, pe) = weekRange(LocalDate.now().minusDays(14)) // 前一周
+        val prev = summary(txs.filter { val t = toLocalDateTime(it.ts); t >= ps && t < pe }).expense
+        return Triple(cur, prev, round2(cur - prev))
+    }
+
+    /** 某时间段内的支出分类占比（周报用：上周哪类花得最多） */
+    fun categoryBetween(txs: List<Tx>, s: LocalDateTime, e: LocalDateTime): List<CatShare> =
+        categoryBreakdown(txs.filter { val t = toLocalDateTime(it.ts); t >= s && t < e })
+
     fun weekDaily(txs: List<Tx>): List<TrendPoint> {
         val monday = LocalDate.now().minusDays(((LocalDate.now().dayOfWeek.value + 6) % 7).toLong())
         val names = listOf("一", "二", "三", "四", "五", "六", "日")

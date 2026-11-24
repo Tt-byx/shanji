@@ -17,7 +17,8 @@ object RecurringScheduler {
             for (r in rules) {
                 if (!r.enabled) continue
                 if (today.dayOfMonth < r.dayOfMonth) continue
-                val runDate = today.withDayOfMonth(r.dayOfMonth)
+                // 29~31 号规则在小月按最后一天生成（withDayOfMonth(31) 在 2 月会抛异常）
+                val runDate = today.withDayOfMonth(r.dayOfMonth.coerceAtMost(today.lengthOfMonth()))
                 // 本月已生成则跳过
                 if (r.lastRunDate >= runDate.toString()) continue
 
@@ -28,7 +29,7 @@ object RecurringScheduler {
                 store.add(
                     newTx(
                         r.type, r.amount, r.merchant, r.category,
-                        note = "周期自动记账", ts = ts, source = "manual",
+                        note = "周期自动记账", ts = ts, source = "recurring",
                         accountId = accountId
                     )
                 )
