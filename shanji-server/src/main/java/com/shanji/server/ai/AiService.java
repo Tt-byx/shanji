@@ -203,15 +203,27 @@ public class AiService {
         输入「打车去机场 80」→ {"amount":80.0,"type":"expense","merchant":"打车","category":"transport","note":""}
         """;
 
+    /** 把客户端本机学到的分类规则注入提示词：AI 侧也知道用户的历史习惯（越用越准） */
+    private String buildParseSystem(AiDtos.ParseRequest req) {
+        if (req.rules() == null || req.rules().isEmpty()) return PARSE_SYSTEM;
+        StringBuilder sb = new StringBuilder(PARSE_SYSTEM);
+        sb.append("\n用户已养成的习惯，命中时优先遵循，不要改成别的分类：\n");
+        for (String r : req.rules()) {
+            if (r != null && !r.isBlank()) sb.append("- ").append(r.trim()).append('\n');
+        }
+        return sb.toString();
+    }
+
     public AiDtos.ParseResult parse(AiDtos.ParseRequest req) {
         String raw = req.rawText() == null ? "" : req.rawText().trim();
         if (raw.isEmpty() || raw.length() > 100) {
             throw new BizException(HttpStatus.BAD_REQUEST, "说一句要记的账，比如「午饭 15 块」");
         }
-        String out = chat(PARSE_SYSTEM, raw, 0.1);
+        String system = buildParseSystem(req);
+        String out = chat(system, raw, 0.1);
         JsonNode j = extractJson(out);
         if (j == null) {
-            out = chat(PARSE_SYSTEM, raw + "（只输出 JSON）", 0.1); // 重试一次
+            out = chat(system, raw + "（只输出 JSON）", 0.1); // 重试一次
             j = extractJson(out);
         }
         if (j == null || !j.path("amount").isNumber()) {
@@ -420,6 +432,15 @@ public class AiService {
         if (req.persona() != null && req.persona().equals("savage")) {
             sb.append("语气：毒舌但善意。\n");
         }
+        // 主动式推送的两种任务：明确告诉模型要产出什么，否则它只会泛泛复述统计
+        String task = null;
+        if ("weekly_report".equals(req.kind())) {
+            task = "这是每周一早上推给用户的周报，写 3 条以内：本周花了多少、比上周多还是少、"
+                + "哪一类花得最多，每条带具体数字，最后一句给个可执行的小建议。";
+        } else if ("budget_over".equals(req.kind())) {
+            task = "用户的预算刚被超出，写一条 20 字以内、能立刻执行的省钱建议，带具体数字，不要说教。";
+        }
+        if (task != null) sb.append("[任务]\n").append(task).append('\n');
         sb.append("[事件]\n");
         if (req.ruleHits() != null) {
             for (String h : req.ruleHits()) sb.append("- ").append(h).append('\n');

@@ -6,8 +6,8 @@ import java.util.Map;
 /** AI 接口请求/响应 DTO */
 public class AiDtos {
 
-    /** 自然语言记账解析 */
-    public record ParseRequest(String rawText, String persona) {}
+    /** 自然语言记账解析。rules = 客户端本机学到的分类规则摘要（商户+金额+时段 → 分类） */
+    public record ParseRequest(String rawText, String persona, List<String> rules) {}
 
     public record ParseResult(
         double amount,

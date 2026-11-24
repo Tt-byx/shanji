@@ -22,15 +22,20 @@ object AiClient {
     private fun bearer(context: Context): String? =
         SyncManager.token(context)?.let { "Bearer $it" }
 
-    /** 一句话记账解析：「午饭 15 块」→ 账单字段 */
-    suspend fun parse(context: Context, rawText: String, persona: String? = null): AiParseData =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val resp = ApiFactory.ai(context).parse(bearer(context), AiParseReq(rawText, persona))
-                if (resp.code != 0 || resp.data == null) error(resp.message.ifEmpty { "" })
-                resp.data
-            }.getOrElse { throw Exception(SyncManager.friendlyError(it)) }
-        }
+    /** 一句话记账解析：「午饭 15 块」→ 账单字段；rules = 本机学到的分类规则摘要 */
+    suspend fun parse(
+        context: Context,
+        rawText: String,
+        persona: String? = null,
+        rules: List<String>? = null
+    ): AiParseData = withContext(Dispatchers.IO) {
+        runCatching {
+            val resp = ApiFactory.ai(context)
+                .parse(bearer(context), AiParseReq(rawText, persona, rules))
+            if (resp.code != 0 || resp.data == null) error(resp.message.ifEmpty { "" })
+            resp.data
+        }.getOrElse { throw Exception(SyncManager.friendlyError(it)) }
+    }
 
     /** 截图识别（多模态走服务器，端侧不再需要自己配 key）：压缩 JPEG → base64 → /api/ai/vision */
     suspend fun vision(context: Context, jpegBytes: ByteArray): AiResult =

@@ -1,5 +1,7 @@
 package com.shanji.app
 
+import android.Manifest
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.fragment.app.FragmentActivity
@@ -32,6 +34,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.shanji.app.data.AppStore
 import com.shanji.app.ui.AccountsScreen
 import com.shanji.app.ui.CalendarScreen
@@ -51,9 +54,19 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppStore.init(this)
+        // 通知权限只问一次：主动式 AI 推送（周报/超支/到期）要靠它
+        val asked = getSharedPreferences("shanji_flags", MODE_PRIVATE)
+        if (Build.VERSION.SDK_INT >= 33 && !asked.getBoolean("notif_asked", false)) {
+            asked.edit().putBoolean("notif_asked", true).apply()
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 101)
+            }
+        }
         setContent {
             ShanJiTheme {
-                MainApp()
+                MainApp(startScreen = intent?.getStringExtra("nav") ?: "home")
             }
         }
     }
@@ -62,8 +75,9 @@ class MainActivity : FragmentActivity() {
 private data class TabItem(val key: String, val label: String, val icon: ImageVector)
 
 @Composable
-fun MainApp() {
-    var screen by remember { mutableStateOf("home") }
+fun MainApp(startScreen: String = "home") {
+    // 通知点进来的目标页（周报 → AI Tab），其余情况从首页开始
+    var screen by remember { mutableStateOf(startScreen) }
     var showRecord by remember { mutableStateOf(false) }
     var editingId by remember { mutableStateOf<String?>(null) }
     var recordType by remember { mutableStateOf("expense") }

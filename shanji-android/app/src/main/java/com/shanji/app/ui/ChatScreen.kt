@@ -549,21 +549,11 @@ fun ChatScreen(
         runFollowUp("已设置${label} ¥${fmtAmount(amount)}（月度循环）", cid)
     }
 
-    /** subscribe 动作：扫出近 3 个月以上每月都有的近似固定支出回传 AI */
+    /** subscribe 动作：扫出近 3 个月以上每月都有的近似固定支出回传 AI（与订阅管理同一套识别） */
     fun runSubscribeThenReply(cid: String) {
-        val txs = AppStore.store.txs.filter { it.type == "expense" }
-        val now = YearMonth.now()
-        val candidates = txs.groupBy { it.merchant.trim() }.mapNotNull { (merchant, list) ->
-            val months = list.map { YearMonth.from(toLocalDateTime(it.ts)) }.distinct()
-            if (months.size < 3 || merchant.isBlank()) return@mapNotNull null
-            val avg = list.map { it.amount }.average()
-            val min = list.minOf { it.amount }
-            val max = list.maxOf { it.amount }
-            if (min <= 0 || max > avg * 1.3 || max < avg * 0.7) return@mapNotNull null
-            "$merchant 约¥${fmtAmount(avg)}/月（近${months.size}个月每月都有）"
-        }
-        val text = if (candidates.isEmpty()) "没有发现连续3个月以上的固定支出"
-        else "疑似订阅/固定支出：" + candidates.joinToString("；")
+        val text = com.shanji.app.data.SubscriptionDetector.summarize(
+            com.shanji.app.data.SubscriptionDetector.detect(AppStore.store.txs)
+        )
         runFollowUp(text, cid)
     }
 

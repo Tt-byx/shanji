@@ -1,5 +1,7 @@
 package com.shanji.app.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -39,6 +41,7 @@ import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,6 +58,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.ui.Alignment
 import com.shanji.app.data.AiClient
@@ -138,6 +143,58 @@ fun RecordSheet(
         )
     }
 
+    /** 一句话记账：文本 → AI 解析 → 回填下方字段（语音识别出的句子也走这里） */
+    fun doParse(raw: String) {
+        val text = raw.trim()
+        if (text.isEmpty() || nlParsing) return
+        nlParsing = true; nlError = null
+        scope.launch {
+            // 已学到的规则一起发给 AI：商户+金额+时段 → 分类，越用越准
+            val rules = com.shanji.app.data.CategoryLearner.aiRules(ctx)
+            runCatching { AiClient.parse(ctx, text, rules = rules) }
+                .onSuccess { p ->
+                    amountText = fmtAmount(p.amount)
+                    if (p.merchant.isNotBlank()) merchant = p.merchant
+                    // 学过的规则优先于 AI 建议；没命中再用 AI 分类，非法 key 兜底
+                    val learned = p.merchant.takeIf { it.isNotBlank() }?.let {
+                        com.shanji.app.data.CategoryLearner.predict(ctx, it, p.amount, dateTime.hour, accountId)
+                    }
+                    val aiCat = p.category.takeIf { c -> Categories.all.any { it.key == c } }
+                    category = learned ?: aiCat ?: category
+                    if (p.note.isNotBlank()) note = p.note
+                    if (p.type == "income") type = "income"
+                    nlText = ""; nlParsing = false
+                }
+                .onFailure { nlError = it.message ?: "没听懂这句话，换个说法试试"; nlParsing = false }
+        }
+    }
+
+    // ===== 语音记账：系统 SpeechRecognizer（免费）→ 识别文本 → doParse =====
+    var voiceListening by remember { mutableStateOf(false) }
+    var micGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                ctx, android.Manifest.permission.RECORD_AUDIO
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val voice = remember { VoiceInput(ctx) }
+    // 每次重组重挂回调：doParse 捕获的都是当前 remember 的状态 holder，不会过期
+    voice.onStateChange = { voiceListening = it }
+    voice.onFail = { msg -> voiceListening = false; nlError = msg }
+    voice.onResult = { text ->
+        voiceListening = false
+        nlText = text
+        doParse(text)
+    }
+    DisposableEffect(voice) { onDispose { voice.destroy() } }
+    val micPerm = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        micGranted = granted
+        if (granted) voice.start() else nlError = "需要麦克风权限才能语音记账"
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -166,28 +223,8 @@ fun RecordSheet(
                     enabled = !nlParsing,
                     leadingIcon = {
                         IconButton(
-                            onClick = {
-                                if (nlText.isNotBlank() && !nlParsing) {
-                                    nlParsing = true; nlError = null
-                                    val raw = nlText.trim()
-                                    scope.launch {
-                                        runCatching { AiClient.parse(ctx, raw) }
-                                            .onSuccess { p ->
-                                                amountText = fmtAmount(p.amount)
-                                                if (p.merchant.isNotBlank()) merchant = p.merchant
-                                                // 学过的分类优先于 AI 建议（越用越准）；非法 key 兜底 dining
-                                                val learned = p.merchant.takeIf { it.isNotBlank() }
-                                                    ?.let { com.shanji.app.data.CategoryLearner.predict(ctx, it) }
-                                                val aiCat = p.category.takeIf { c -> Categories.all.any { it.key == c } }
-                                                category = learned ?: aiCat ?: category
-                                                if (p.note.isNotBlank()) note = p.note
-                                                if (p.type == "income") type = "income"
-                                                nlText = ""; nlParsing = false
-                                            }
-                                            .onFailure { nlError = it.message ?: "没听懂这句话，换个说法试试"; nlParsing = false }
-                                    }
-                                }
-                            }
+                            onClick = { doParse(nlText) },
+                            enabled = nlText.isNotBlank() && !nlParsing
                         ) {
                             if (nlParsing) {
                                 CircularProgressIndicator(
@@ -198,6 +235,27 @@ fun RecordSheet(
                             } else {
                                 Icon(Icons.AutoMirrored.Filled.Send, "AI 解析", tint = Primary)
                             }
+                        }
+                    },
+                    // 语音记账：点一下说话，识别出的句子自动走 AI 解析回填
+                    trailingIcon = {
+                        IconButton(
+                            onClick = {
+                                if (voiceListening) {
+                                    voice.stop()
+                                } else if (micGranted) {
+                                    voice.start()
+                                } else {
+                                    micPerm.launch(android.Manifest.permission.RECORD_AUDIO)
+                                }
+                            },
+                            enabled = !nlParsing
+                        ) {
+                            Icon(
+                                if (voiceListening) Icons.Filled.Mic else Icons.Filled.MicOff,
+                                if (voiceListening) "停止录音" else "语音记账",
+                                tint = if (voiceListening) Red else Primary
+                            )
                         }
                     },
                     isError = nlError != null,
@@ -373,9 +431,12 @@ fun RecordSheet(
                             val ts = dateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
                             val finalMerchant = if (type == "transfer") "转账" else merchant
                             val finalCat = if (type == "transfer") "other" else category
-                            // 学习：记住这次的 商户→分类（下次自动带出）
+                            // 学习：记住这次的 商户+金额区间+时段+账户 → 分类（下次自动带出）
                             if (type != "transfer") {
-                                com.shanji.app.data.CategoryLearner.learn(ctx, finalMerchant, finalCat)
+                                com.shanji.app.data.CategoryLearner.learn(
+                                    ctx, finalMerchant, finalCat,
+                                    amount = amount, hour = dateTime.hour, accountId = accountId
+                                )
                             }
                             // 超支提醒：计算记账前的已花额
                             val ym = java.time.YearMonth.of(dateTime.year, dateTime.monthValue)

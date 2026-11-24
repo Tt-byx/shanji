@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -63,6 +64,7 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
     var confirmClear by remember { mutableStateOf(false) }
     var confirmDemo by remember { mutableStateOf(false) }
     var showAiSettings by remember { mutableStateOf(false) }
+    var showNotify by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
     var showBudget by remember { mutableStateOf(false) }
     // 登录态变化时触发重组（logout/login 后立即刷新卡片）
@@ -209,6 +211,8 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("AI 助手") { showAiSettings = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
+                MenuItem("AI 主动提醒") { showNotify = true }
+                HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("载入演示数据") { confirmDemo = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("导出数据 (JSON)") {
@@ -226,6 +230,39 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 MenuItem("清空全部数据", danger = true) { confirmClear = true }
             }
         }
+    }
+
+    if (showNotify) {
+        var notifyOn by remember { mutableStateOf(com.shanji.app.data.ProactiveAi.enabled(context)) }
+        AlertDialog(
+            onDismissRequest = { showNotify = false },
+            title = { Text("AI 主动提醒") },
+            text = {
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("开启主动提醒", fontSize = 15.sp)
+                        Switch(
+                            checked = notifyOn,
+                            onCheckedChange = {
+                                notifyOn = it
+                                com.shanji.app.data.ProactiveAi.setEnabled(context, it)
+                            }
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "每周一早上推一条周报；每天检查预算超支、没分类的账单、订阅到期扣款，" +
+                            "到点用通知栏提醒你。关掉后不再推送。",
+                        fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { showNotify = false }) { Text("完成") } }
+        )
     }
 
     if (showBudget) {

@@ -13,7 +13,12 @@ import retrofit2.http.Streaming
 /* ---- AI 中转接口（服务器持有 GLM key） DTO ---- */
 
 @Serializable
-data class AiParseReq(val rawText: String, val persona: String? = null)
+data class AiParseReq(
+    val rawText: String,
+    val persona: String? = null,
+    /** 用户本机学到的分类规则摘要（商户+金额+时段 → 分类），让 AI 越用越准 */
+    val rules: List<String>? = null
+)
 
 @Serializable
 data class AiParseData(
