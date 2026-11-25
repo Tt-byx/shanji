@@ -247,10 +247,10 @@ object ProactiveAi {
             val key = "due_${sub.id}"
             if (p.getString(key, "") == marker) return@forEach
             val whenText = if (date == LocalDate.now()) "今天" else "明天"
-            // 通知 id 用订阅名 hash（稳定且与分类号段隔离），不用会碰撞的 id hash
+            // 通知 id 用订阅 id hash（稳定唯一，同名商户不撞；D13：原来用 merchant hash 会互相顶掉）
             val ok = notify(
                 context,
-                ID_DUE_BASE + (sub.merchant.hashCode().and(0x3ff)),
+                ID_DUE_BASE + (sub.id.hashCode().and(0x3ff)),
                 "「${sub.merchant}」${whenText}扣款 ¥${fmtAmount(sub.amount)}",
                 "每月${sub.dayOfMonth}号 · ${Categories.of(sub.category).label} · 上次识别约¥${fmtAmount(sub.amount)}/月"
             )

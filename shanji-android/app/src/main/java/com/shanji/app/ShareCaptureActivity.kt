@@ -174,8 +174,11 @@ class ShareCaptureActivity : ComponentActivity() {
             }
         }
 
-        if (savedShot == null && textPreset.isEmpty()) {
-            Toast.makeText(this, "未收到可识别的内容", Toast.LENGTH_SHORT).show()
+        // U7：Toast 是副作用，写在组合体内会随 IME insets 重组反复弹 → 只在首帧弹一次
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            if (savedShot == null && textPreset.isEmpty()) {
+                Toast.makeText(this@ShareCaptureActivity, "未收到可识别的内容", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 

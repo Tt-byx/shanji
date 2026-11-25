@@ -24,4 +24,17 @@ object MonthlyReportStore {
         }
         e.apply()
     }
+
+    /**
+     * U6：v1.17 及更早的 insight_ 前缀旧缓存换前缀后「不再被读但永不删除」，
+     * 启动时一次性清掉（insight2_ 是新前缀，startsWith("insight_") 不会误伤）。
+     */
+    fun clearLegacyInsight(context: Context) {
+        val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val keys = sp.all.keys.filter { it.startsWith("insight_") }
+        if (keys.isEmpty()) return
+        val e = sp.edit()
+        keys.forEach { e.remove(it) }
+        e.apply()
+    }
 }

@@ -15,6 +15,10 @@ interface BudgetDao {
     @Query("SELECT * FROM budgets WHERE deleted = 0")
     suspend fun listAll(): List<BudgetEntity>
 
+    /** 含墓碑：同步 push 用，本地删除才能传播到其它设备（D4） */
+    @Query("SELECT * FROM budgets")
+    suspend fun listAllWithDeleted(): List<BudgetEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(budget: BudgetEntity)
 

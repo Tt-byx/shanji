@@ -90,7 +90,9 @@ fun CalendarScreen(onBack: () -> Unit) {
             }
             Text(
                 "${ym.year}年${ym.monthValue}月", fontSize = 15.sp,
-                modifier = Modifier.width(96.dp), textAlign = TextAlign.Center
+                // U13：不锁固定宽度（96dp 在字体缩放 ≥1.15x 必截断），padding 自适应
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 4.dp)
             )
             IconButton(onClick = { ym = ym.plusMonths(1) }) {
                 Icon(

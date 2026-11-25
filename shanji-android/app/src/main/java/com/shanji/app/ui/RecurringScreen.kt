@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -62,6 +63,8 @@ fun RecurringScreen(onBack: () -> Unit) {
     val rules = store.list
     var editing by remember { mutableStateOf<Recurring?>(null) }
     var showAdd by remember { mutableStateOf(false) }
+    // U8：删除固定支出/订阅先确认，误触不再直接丢规则
+    var confirmDelRec by remember { mutableStateOf<Recurring?>(null) }
 
     val scope = rememberCoroutineScope()
     val ctx = androidx.compose.ui.platform.LocalContext.current
@@ -125,11 +128,15 @@ fun RecurringScreen(onBack: () -> Unit) {
                 Spacer(Modifier.width(8.dp))
                 Text(
                     "知道了", fontSize = 12.sp, color = Primary,
-                    modifier = Modifier.clickable {
-                        showDayHint = false
-                        ctx.getSharedPreferences("shanji_flags", android.content.Context.MODE_PRIVATE)
-                            .edit().putBoolean("sub_day_check_hint", false).apply()
-                    }
+                    // U11+U14：全 App 最小的可点目标 → ≥48dp + 按钮语义
+                    modifier = Modifier
+                        .defaultMinSize(minHeight = 48.dp)
+                        .clickable(role = androidx.compose.ui.semantics.Role.Button) {
+                            showDayHint = false
+                            ctx.getSharedPreferences("shanji_flags", android.content.Context.MODE_PRIVATE)
+                                .edit().putBoolean("sub_day_check_hint", false).apply()
+                        }
+                        .padding(horizontal = 6.dp)
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -282,8 +289,24 @@ fun RecurringScreen(onBack: () -> Unit) {
                 )
                 editing = null
             },
-            onDelete = { store.remove(r.id); editing = null },
+            onDelete = { confirmDelRec = r; editing = null },
             onDismiss = { editing = null }
+        )
+    }
+
+    // U8：删除固定支出二次确认
+    confirmDelRec?.let { r ->
+        ConfirmDeleteDialog(
+            title = "删除「${r.merchant}」？",
+            message = if (r.autoRecord)
+                "不可恢复。删除后每月不再自动生成这笔账单。"
+            else
+                "不可恢复。删除后不再有到期提醒。",
+            onConfirm = {
+                store.remove(r.id)
+                confirmDelRec = null
+            },
+            onDismiss = { confirmDelRec = null }
         )
     }
 }

@@ -24,6 +24,26 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.error(400, msg));
     }
 
+    /** 请求体非法 JSON / 字段类型不匹配：是客户端问题，报 400 而不是 500 误导排障（S8） */
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUnreadable(org.springframework.http.converter.HttpMessageNotReadableException e) {
+        log.warn("bad request body: {}", e.getMessage());
+        return ResponseEntity.badRequest().body(ApiResponse.error(400, "请求格式不对"));
+    }
+
+    /** 路径/查询参数类型不匹配同样归 400（S8） */
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException e) {
+        return ResponseEntity.badRequest().body(ApiResponse.error(400, "参数格式不对"));
+    }
+
+    /** 列宽/非空约束被违反：400 + 人话定位，别再兜成 500（S3 放大器） */
+    @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIntegrity(org.springframework.dao.DataIntegrityViolationException e) {
+        log.warn("data integrity violation: {}", e.getMostSpecificCause().getMessage());
+        return ResponseEntity.badRequest().body(ApiResponse.error(400, "有数据超出长度限制，改短一点再试"));
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleOther(Exception e) {
         log.error("unhandled error", e);

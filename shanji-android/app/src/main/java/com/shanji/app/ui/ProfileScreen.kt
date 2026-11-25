@@ -74,6 +74,8 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
     var pendingImport by remember { mutableStateOf<List<Tx>?>(null) }
     // CSV 导入：解析结果 to 新账单（含失败行计数与样例）
     var pendingCsv by remember { mutableStateOf<Pair<BackupManager.CsvParseResult, List<Tx>>?>(null) }
+    // D5：读文件+解析是重活，解析期间给 loading 态，主线程不冻结
+    var importing by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -106,12 +108,23 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                val text = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                    ?: error("读取失败")
-                BackupManager.parseJson(text)
-            }.onSuccess { list -> pendingImport = list }
-                .onFailure { android.widget.Toast.makeText(context, "备份文件解析失败", android.widget.Toast.LENGTH_SHORT).show() }
+            // D5：回调只发起，读取/解析丢 IO——几 MB 备份不再冻结主线程数秒
+            importing = true
+            scope.launch {
+                val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        val text = context.contentResolver.openInputStream(uri)
+                            ?.use { it.readBytes().toString(Charsets.UTF_8) }
+                            ?: error("读取失败")
+                        BackupManager.parseJson(text)
+                    }
+                }
+                importing = false
+                r.onSuccess { pendingImport = it }
+                    .onFailure {
+                        android.widget.Toast.makeText(context, "备份文件解析失败", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+            }
         }
     }
 
@@ -120,29 +133,37 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            runCatching {
-                val text = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-                    ?: error("读取失败")
-                BackupManager.parseCsv(text)
-            }.onSuccess { res ->
-                if (res.total == 0) {
-                    android.widget.Toast.makeText(context, "表格里没有数据行", android.widget.Toast.LENGTH_SHORT).show()
-                } else if (res.txs.isEmpty()) {
-                    // 全部行都解析失败：给出失败原因样例
+            importing = true
+            scope.launch {
+                val r = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        val text = context.contentResolver.openInputStream(uri)
+                            ?.use { it.readBytes().toString(Charsets.UTF_8) }
+                            ?: error("读取失败")
+                        BackupManager.parseCsv(text)
+                    }
+                }
+                importing = false
+                r.onSuccess { res ->
+                    if (res.total == 0) {
+                        android.widget.Toast.makeText(context, "表格里没有数据行", android.widget.Toast.LENGTH_SHORT).show()
+                    } else if (res.txs.isEmpty()) {
+                        // 全部行都解析失败：给出失败原因样例
+                        android.widget.Toast.makeText(
+                            context, "没读到账单：" + (res.failed.firstOrNull() ?: "格式无法识别"),
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    } else {
+                        val existing = txs.mapTo(HashSet()) { it.id }
+                        pendingCsv = res to res.txs.filter { it.id !in existing }
+                    }
+                }.onFailure {
+                    // 表头不认识等：message 已是给用户看的完整提示
                     android.widget.Toast.makeText(
-                        context, "没读到账单：" + (res.failed.firstOrNull() ?: "格式无法识别"),
+                        context, it.message ?: "CSV 解析失败，检查文件格式",
                         android.widget.Toast.LENGTH_LONG
                     ).show()
-                } else {
-                    val existing = txs.mapTo(HashSet()) { it.id }
-                    pendingCsv = res to res.txs.filter { it.id !in existing }
                 }
-            }.onFailure {
-                // 表头不认识等：message 已是给用户看的完整提示
-                android.widget.Toast.makeText(
-                    context, it.message ?: "CSV 解析失败，检查文件格式",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
             }
         }
     }
@@ -283,7 +304,8 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                         importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                    MenuItem("载入演示数据") { showData = false; confirmDemo = true }
+                    // U10：载入演示会覆盖全部账单，破坏等级与清空同级 → 标 danger
+                    MenuItem("载入演示数据（覆盖全部账单）", danger = true) { showData = false; confirmDemo = true }
                     HorizontalDivider(color = MaterialTheme.colorScheme.background)
                     MenuItem("清空全部数据", danger = true) { showData = false; confirmClear = true }
                 }
@@ -378,13 +400,23 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("清空全部数据") },
-            text = { Text("此操作不可恢复，建议先导出备份。确定清空？") },
+            // U10：说清实际范围——只清账单，预算/账户/固定支出保留
+            text = { Text("将清空全部 ${txs.size} 笔账单（预算/账户/固定支出保留），不可恢复，建议先导出备份。") },
             confirmButton = {
                 TextButton(onClick = { AppStore.store.clear(); confirmClear = false }) {
                     Text("清空", color = Red)
                 }
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } }
+        )
+    }
+    // D5：解析中给进度提示（读取+解析在 IO，用户不面对无响应的界面）
+    if (importing) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("正在导入…") },
+            text = { Text("读取并解析文件中，账单多的话稍等一下。") },
+            confirmButton = {}
         )
     }
     pendingImport?.let { list ->

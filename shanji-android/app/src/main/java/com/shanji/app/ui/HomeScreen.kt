@@ -36,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -211,6 +213,8 @@ internal fun TxRow(tx: Tx, onClick: () -> Unit = {}) {
     val cat = Categories.of(tx.category)
     val isTransfer = tx.type == "transfer"
     val accounts = com.shanji.app.data.AppStore.accounts
+    // U9：cat.bg 全是浅色底，深色主题下会变成一屏亮白圆块 → 按主题取色
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
     Row(
         Modifier.fillMaxWidth()
             .clickable(onClick = onClick)
@@ -218,7 +222,11 @@ internal fun TxRow(tx: Tx, onClick: () -> Unit = {}) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
-            Modifier.size(40.dp).background(Color(if (isTransfer) 0xFFF3F3F6 else cat.bg), CircleShape),
+            Modifier.size(40.dp).background(
+                if (dark) Color(if (isTransfer) 0xFFFFFFFF else cat.color).copy(alpha = 0.18f)
+                else Color(if (isTransfer) 0xFFF3F3F6 else cat.bg),
+                CircleShape
+            ),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -254,17 +262,26 @@ internal fun TxRow(tx: Tx, onClick: () -> Unit = {}) {
                 maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
         }
+        val amountText = when {
+            isTransfer -> "→¥" + fmtAmount(tx.amount)
+            tx.type == "income" -> "+¥" + fmtAmount(tx.amount)
+            else -> "-¥" + fmtAmount(tx.amount)
+        }
         Text(
-            when {
-                isTransfer -> "→¥" + fmtAmount(tx.amount)
-                tx.type == "income" -> "+¥" + fmtAmount(tx.amount)
-                else -> "-¥" + fmtAmount(tx.amount)
-            },
+            amountText,
             fontSize = 15.sp, fontFamily = FontFamily.Monospace,
             color = when {
                 isTransfer -> MaterialTheme.colorScheme.onSurfaceVariant
                 tx.type == "income" -> com.shanji.app.ui.theme.Green
                 else -> MaterialTheme.colorScheme.onSurface
+            },
+            // U14：收支只靠颜色区分对色盲用户不可辨 → 补「收入/支出」朗读语义
+            modifier = Modifier.semantics {
+                contentDescription = when {
+                    isTransfer -> "转账 ${fmtAmount(tx.amount)} 元"
+                    tx.type == "income" -> "收入 ${fmtAmount(tx.amount)} 元"
+                    else -> "支出 ${fmtAmount(tx.amount)} 元"
+                }
             }
         )
     }

@@ -90,14 +90,15 @@ object ChatStore {
             conversationId = convId,
             role = role,
             content = content,
-            createdAt = System.currentTimeMillis() + (seq++)
+            createdAt = System.currentTimeMillis() + seq.getAndIncrement()
         )
         db(context).chatMessageDao().insert(m)
         touch(context, convId)
         return m
     }
 
-    private var seq = 0L
+    // D12：append 可能被并发协程调用（流式落库 + 用户消息），裸 seq++ 会撞同一毫秒序号
+    private val seq = java.util.concurrent.atomic.AtomicLong(0)
 
     private suspend fun touch(context: Context, convId: String) {
         val dao = db(context).conversationDao()

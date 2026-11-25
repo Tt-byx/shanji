@@ -79,6 +79,15 @@ object Categories {
 fun normalizeCatKey(s: String): String? =
     Categories.all.firstOrNull { it.key == s || it.label == s }?.key
 
+/**
+ * AI 入参统一收口（U2+D8）：type 只认 expense/income/transfer（非法→expense），
+ * category 归一为合法 key（认不出→other）。所有 AI 触发的记账入口都必须过这里，
+ * 避免脏值入库后脱离收支统计/分类统计/预算。
+ */
+fun sanitizeAiTx(type: String, category: String): Pair<String, String> =
+    (if (type in setOf("expense", "income", "transfer")) type else "expense") to
+        (normalizeCatKey(category) ?: "other")
+
 fun round2(n: Double): Double = Math.round(n * 100) / 100.0
 
 fun newTx(
@@ -143,31 +152,38 @@ class TxStore(context: Context) {
         prefs.edit().putBoolean("migrated_to_room", true).apply()
     }
 
-    // 写操作全部走 IO 协程：主线程只改 UI，Room 写入由 observeAll 流回刷
-    fun add(tx: Tx) { scope.launch { dao.insert(tx.toEntity()) }; AppStore.notifyChanged() }
-    fun update(tx: Tx) { scope.launch { dao.update(tx.toEntity()) }; AppStore.notifyChanged() }
+    // 写操作全部走 IO 协程：主线程只改 UI，Room 写入由 observeAll 流回刷。
+    // notifyChanged 必须在写库完成之后调用（D2）：先通知会让小组件读到旧数据。
+    fun add(tx: Tx) { scope.launch { dao.insert(tx.toEntity()); AppStore.notifyChanged() } }
+    fun update(tx: Tx) { scope.launch { dao.update(tx.toEntity()); AppStore.notifyChanged() } }
     fun remove(id: String) {
-        scope.launch { dao.delete(id, System.currentTimeMillis()) }
-        AppStore.notifyChanged()
+        scope.launch {
+            dao.delete(id, System.currentTimeMillis())
+            AppStore.notifyChanged()
+        }
     }
     fun clear() {
-        scope.launch { dao.softClear(System.currentTimeMillis()) }
-        AppStore.notifyChanged()
+        scope.launch {
+            dao.softClear(System.currentTimeMillis())
+            AppStore.notifyChanged()
+        }
     }
     fun replaceAll(list: List<Tx>) {
         scope.launch {
             // 软清空（墓碑）→ 恢复的行覆盖墓碑，未包含的行保持删除态并可同步传播
             dao.softClear(System.currentTimeMillis())
             dao.insertAll(list.map { it.toEntity() })
+            AppStore.notifyChanged()
         }
-        AppStore.notifyChanged()
     }
 
     /** 导入（CSV 等）：只新增不存在的行，不覆盖已有账单 */
     fun addAll(list: List<Tx>) {
         if (list.isEmpty()) return
-        scope.launch { dao.insertAll(list.map { it.toEntity() }) }
-        AppStore.notifyChanged()
+        scope.launch {
+            dao.insertAll(list.map { it.toEntity() })
+            AppStore.notifyChanged()
+        }
     }
     fun exportJson(): String = json.encodeToString(txs.toList())
 
@@ -231,20 +247,29 @@ object AppStore {
     /** 账单数据版本：txs 每次从 Room 刷新 +1，统计页 remember(它) 避免无关重组重算 */
     val version = androidx.compose.runtime.mutableStateOf(0)
 
+    private val initLock = Any()
+    private val storeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     fun init(context: android.content.Context) {
-        appContext = context.applicationContext
-        if (!this::store.isInitialized) store = TxStore(context.applicationContext)
-        if (!this::accounts.isInitialized) accounts = AccountStore(context.applicationContext)
-        if (!this::budgets.isInitialized) budgets = BudgetStore(context.applicationContext)
-        if (!this::recurring.isInitialized) {
-            recurring = RecurringStore(context.applicationContext)
-            // 启动时补记周期账单：涉及写库，放后台线程避免拖慢首帧
-            Thread {
-                runCatching { RecurringScheduler.checkAndRun(store, accounts, recurring) }
-            }.start()
+        // MainActivity 与 ShareCaptureActivity 可并发进入（D6）：加锁防止
+        // 双入口同时看到 isInitialized=false 而重复建库/重复补记周期账单
+        synchronized(initLock) {
+            appContext = context.applicationContext
+            if (!this::store.isInitialized) store = TxStore(context.applicationContext)
+            if (!this::accounts.isInitialized) accounts = AccountStore(context.applicationContext)
+            if (!this::budgets.isInitialized) budgets = BudgetStore(context.applicationContext)
+            if (!this::recurring.isInitialized) {
+                recurring = RecurringStore(context.applicationContext)
+                // 启动时补记周期账单：涉及写库，放 IO 协程避免拖慢首帧，也不裸开线程
+                storeScope.launch {
+                    runCatching { RecurringScheduler.checkAndRun(store, accounts, recurring) }
+                }
+            }
         }
         // 主动式 AI 推送：每次启动重排闹钟（周报/超支/到期），关掉 App 也会按时弹
         runCatching { ProactiveAi.schedule(appContext) }
+        // U6：一次性清掉 v1.17 旧 insight_ 前缀缓存（换前缀后只不再读、永不删）
+        runCatching { MonthlyReportStore.clearLegacyInsight(appContext) }
         notifyChanged()
     }
 

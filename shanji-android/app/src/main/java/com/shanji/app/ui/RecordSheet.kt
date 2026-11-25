@@ -118,7 +118,8 @@ fun RecordSheet(
     var category by remember {
         mutableStateOf(
             editing?.category
-                ?: presetCategory.takeIf { Categories.all.any { c -> c.key == it } }
+                // D8：预填不再「认不出就丢弃」——key/中文标签都转换（餐饮→dining），认不出才回退
+                ?: com.shanji.app.data.normalizeCatKey(presetCategory)
                 ?: "dining"
         )
     }

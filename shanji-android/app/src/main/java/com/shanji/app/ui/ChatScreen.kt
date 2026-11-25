@@ -363,6 +363,9 @@ fun ChatScreen(
     var drawerOpen by remember { mutableStateOf(false) }    // 抽屉动画目标态
     var conversations by remember { mutableStateOf<List<com.shanji.app.data.db.ConversationEntity>>(emptyList()) }
     var renameTarget by remember { mutableStateOf<com.shanji.app.data.db.ConversationEntity?>(null) }
+    // U3：删除会话/消息先确认，误触不再直接丢整段对话
+    var confirmDelConv by remember { mutableStateOf<com.shanji.app.data.db.ConversationEntity?>(null) }
+    var confirmDelMsg by remember { mutableStateOf<ChatItem?>(null) }
     var renameText by remember { mutableStateOf("") }
     // 长按气泡 → 底部操作表（复制 / 删除）
     var sheetTarget by remember { mutableStateOf<ChatItem?>(null) }
@@ -558,6 +561,8 @@ fun ChatScreen(
 
     /** subscribe 动作：账单摘要交服务端 AI 判断订阅（F7），AI 不可用降级本地规则，结果回传 AI 出第二轮 */
     fun runSubscribeThenReply(cid: String) {
+        // U12：识别要真调 AI（秒级到十几秒），期间给「想一下」指示，别让界面像卡死
+        startPending = true
         scope.launch {
             val scan = withContext(Dispatchers.IO) {
                 com.shanji.app.data.SubscriptionDetector.scan(
@@ -589,12 +594,21 @@ fun ChatScreen(
         if (add != null) {
             val amount = add.params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
             if (amount > 0) {
+                // U2+D8：type/category 先过收口，脏值不进 RecordSheet 预填
+                val (txType, txCat) = com.shanji.app.data.sanitizeAiTx(
+                    add.params["type"]?.toString()?.trim('"') ?: "expense",
+                    add.params["category"]?.toString()?.trim('"') ?: "other"
+                )
                 onAddTx(
                     amount,
                     add.params["merchant"]?.toString()?.trim('"') ?: "",
-                    add.params["category"]?.toString()?.trim('"') ?: "other",
-                    add.params["type"]?.toString()?.trim('"') ?: "expense"
+                    txCat,
+                    txType
                 )
+            } else {
+                android.widget.Toast.makeText(
+                    ctx, "AI 没给金额，这笔没记上", android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         }
         val query = actions.firstOrNull { it.fn == "queryTx" }
@@ -643,17 +657,31 @@ fun ChatScreen(
                             ctx, "已设置总预算 ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
                         ).show()
                     }
+                } else {
+                    // U1：AI 没给金额时不能静默无反应
+                    android.widget.Toast.makeText(
+                        ctx, "AI 没给金额，去预算设置里手动填一下", android.widget.Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
             "addTx" -> {
                 val amount = btn.params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
                 if (amount > 0) {
+                    // U2+D8：type/category 先过收口
+                    val (txType, txCat) = com.shanji.app.data.sanitizeAiTx(
+                        btn.params["type"]?.toString()?.trim('"') ?: "expense",
+                        btn.params["category"]?.toString()?.trim('"') ?: "other"
+                    )
                     onAddTx(
                         amount,
                         btn.params["merchant"]?.toString()?.trim('"') ?: "",
-                        btn.params["category"]?.toString()?.trim('"') ?: "other",
-                        btn.params["type"]?.toString()?.trim('"') ?: "expense"
+                        txCat,
+                        txType
                     )
+                } else {
+                    android.widget.Toast.makeText(
+                        ctx, "AI 没给金额，这笔没记上", android.widget.Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
@@ -946,7 +974,7 @@ fun ChatScreen(
                 onValueChange = { input = it.take(200) },
                 placeholder = { Text("问点什么，或说「记一笔打车 20」") },
                 singleLine = true,
-                enabled = !busy,
+                // U12：不再整段禁用——生成期间允许预输入下一条，发送由 canSend 门控防并发
                 // 输入字体必须 16sp：低于 16px 时 iOS/WebView 聚焦会自动放大且不回退
                 textStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
                 shape = RoundedCornerShape(999.dp),
@@ -1061,16 +1089,7 @@ fun ChatScreen(
                         }) {
                             Text("改名", fontSize = 12.sp, color = Primary)
                         }
-                        IconButton(onClick = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) { ChatStore.delete(ctx, c.id) }
-                                conversations = withContext(Dispatchers.IO) { ChatStore.list(ctx) }
-                                if (c.id == convId) {
-                                    val next = withContext(Dispatchers.IO) { ChatStore.latestOrCreate(ctx) }
-                                    openConversation(next.id)
-                                }
-                            }
-                        }) {
+                        IconButton(onClick = { confirmDelConv = c }) {
                             Icon(Icons.Filled.Delete, "删除", tint = Red, modifier = Modifier.height(18.dp))
                         }
                     }
@@ -1096,16 +1115,48 @@ fun ChatScreen(
                 }
                 if (!target.streaming) {
                     SheetActionRow(Icons.Filled.Delete, "删除", danger = true) {
-                        deletedIds.add(target.id)
-                        items.removeAll { it.id == target.id }
+                        // U3：先关操作表，确认弹层接管
+                        confirmDelMsg = target
                         sheetTarget = null
-                        scope.launch {
-                            withContext(Dispatchers.IO) { ChatStore.deleteMessage(ctx, target.id) }
-                        }
                     }
                 }
             }
         }
+    }
+
+    // U3：删除确认（会话/消息共用件）
+    confirmDelConv?.let { c ->
+        ConfirmDeleteDialog(
+            title = "删除会话「${c.title}」？",
+            message = "整段对话记录将被删除，不可恢复。",
+            onConfirm = {
+                confirmDelConv = null
+                scope.launch {
+                    withContext(Dispatchers.IO) { ChatStore.delete(ctx, c.id) }
+                    conversations = withContext(Dispatchers.IO) { ChatStore.list(ctx) }
+                    if (c.id == convId) {
+                        val next = withContext(Dispatchers.IO) { ChatStore.latestOrCreate(ctx) }
+                        openConversation(next.id)
+                    }
+                }
+            },
+            onDismiss = { confirmDelConv = null }
+        )
+    }
+    confirmDelMsg?.let { target ->
+        ConfirmDeleteDialog(
+            title = "删除这条消息？",
+            message = "删除后不可恢复。",
+            onConfirm = {
+                confirmDelMsg = null
+                deletedIds.add(target.id)
+                items.removeAll { it.id == target.id }
+                scope.launch {
+                    withContext(Dispatchers.IO) { ChatStore.deleteMessage(ctx, target.id) }
+                }
+            },
+            onDismiss = { confirmDelMsg = null }
+        )
     }
 
     // ===== 溯源明细：AI 数字/卡片按钮点开 → 底部弹层列出对应账单（共享件，与统计页同一实现）=====
@@ -1311,9 +1362,11 @@ private fun AiCardView(card: com.shanji.app.data.net.AiCard, onClick: (com.shanj
                     Text(
                         btn.label, fontSize = 13.sp, color = Primary,
                         modifier = Modifier
+                            // U11+U14：触控目标 ≥48dp + 按钮语义（TalkBack 读作按钮）
+                            .defaultMinSize(minHeight = 48.dp)
                             .background(Primary.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
-                            .clickable { onClick(btn) }
-                            .padding(horizontal = 12.dp, vertical = 7.dp)
+                            .clickable(role = androidx.compose.ui.semantics.Role.Button) { onClick(btn) }
+                            .padding(horizontal = 14.dp, vertical = 7.dp)
                     )
                 }
             }

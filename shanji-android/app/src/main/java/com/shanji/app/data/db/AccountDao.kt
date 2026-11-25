@@ -16,6 +16,10 @@ interface AccountDao {
     @Query("SELECT * FROM accounts WHERE deleted = 0 ORDER BY sortOrder ASC")
     suspend fun listAll(): List<AccountEntity>
 
+    /** 含墓碑：同步 push 用，本地删除才能传播到其它设备（D4） */
+    @Query("SELECT * FROM accounts")
+    suspend fun listAllWithDeleted(): List<AccountEntity>
+
     @Query("SELECT COUNT(*) FROM accounts WHERE deleted = 0")
     suspend fun count(): Int
 

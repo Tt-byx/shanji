@@ -148,8 +148,8 @@ object SyncManager {
                 bearer,
                 PushRequest(
                     txs = dirty,
-                    accounts = db.accountDao().listAll(),
-                    budgets = db.budgetDao().listAll(),
+                    accounts = db.accountDao().listAllWithDeleted(),   // 含墓碑（D4）
+                    budgets = db.budgetDao().listAllWithDeleted(),      // 含墓碑（D4）
                     fixeds = db.recurringDao().listAllWithDeleted()   // 含墓碑：本地删除要能传播到其它设备
                 )
             )
@@ -196,7 +196,16 @@ object SyncManager {
             SyncReport(dirty.size, data.txs.size)
         }.fold(
             onSuccess = { Result.success(it) },
-            onFailure = { Result.failure(Exception(friendlyError(it))) }
+            onFailure = { t ->
+                // D14：同步时 token 过期（401）→ 自愈：清掉失效会话，
+                // 提示重新登录（friendlyError 里 401 的通用文案是给登录页的，这里要场景化）
+                if (t is retrofit2.HttpException && t.code() == 401) {
+                    logout(context)
+                    Result.failure(Exception("登录已过期，请重新登录"))
+                } else {
+                    Result.failure(Exception(friendlyError(t)))
+                }
+            }
         )
     }
 }

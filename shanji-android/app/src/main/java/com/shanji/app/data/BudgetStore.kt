@@ -44,6 +44,7 @@ class BudgetStore(context: Context) {
     fun set(scope: String, category: String, amount: Double) {
         val budget = Budget(scope, category, amount)
         // G13：写库走 scope（IO），不再 runBlocking 卡主线程（注意：scope 参数遮蔽了属性，用 this@）
+        // D2：notifyChanged 放到写库完成之后，否则小组件读到旧预算
         this@BudgetStore.scope.launch {
             if (amount <= 0) {
                 dao.softDelete(
@@ -53,7 +54,7 @@ class BudgetStore(context: Context) {
             } else {
                 dao.upsert(budget.toEntity())
             }
+            AppStore.notifyChanged()
         }
-        AppStore.notifyChanged()
     }
 }

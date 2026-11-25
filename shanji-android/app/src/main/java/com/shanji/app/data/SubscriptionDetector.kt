@@ -43,7 +43,8 @@ object SubscriptionDetector {
                 Recurring(
                     id = "sub_" + UUID.randomUUID().toString().take(8),
                     type = "expense", amount = round2(s.amount), merchant = s.name.trim().take(30),
-                    category = s.category,
+                    // U2+D8：AI 给的分类先归一（key/中文标签→合法 key，认不出→other），脏值不落库
+                    category = normalizeCatKey(s.category) ?: "other",
                     // 优先用服务端从账单回填的账户（G5），取不到才用调用方兜底值
                     accountId = s.accountId.ifBlank { accountId },
                     dayOfMonth = s.dayOfMonth.coerceIn(1, 31),
@@ -90,7 +91,7 @@ object SubscriptionDetector {
                     type = "expense",
                     amount = round2(avg),
                     merchant = name,
-                    category = last.category,
+                    category = normalizeCatKey(last.category) ?: "other",
                     accountId = last.accountId,
                     dayOfMonth = toLocalDateTime(last.ts).dayOfMonth,
                     enabled = true,

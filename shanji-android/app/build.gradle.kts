@@ -21,8 +21,8 @@ android {
         applicationId = "com.shanji.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 19
-        versionName = "1.18"
+        versionCode = 20
+        versionName = "1.19"
         buildConfigField("String", "SERVER_URL", "\"$serverUrl\"")
     }
 

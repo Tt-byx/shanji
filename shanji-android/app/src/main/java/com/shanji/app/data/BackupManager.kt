@@ -64,9 +64,11 @@ object BackupManager {
         val catByKey = Categories.all.associateBy({ it.label }, { it.key })
         val txs = mutableListOf<Tx>()
         val failed = mutableListOf<String>()
+        // D9：同文件内 fp 指纹出现次数——同秒同商户同金额的两笔真实交易要各占一个 id
+        val fpSeen = mutableMapOf<String, Int>()
         dataRows.forEachIndexed { i, cols ->
             val lineNo = i + (if (col != null) 2 else 1)
-            val reason = parseRow(cols, col, catByKey, txs)
+            val reason = parseRow(cols, col, catByKey, txs, fpSeen)
             if (reason != null && failed.size < 5) failed.add("第${lineNo}行：$reason")
         }
         return CsvParseResult(txs, dataRows.size, failed)
@@ -120,7 +122,8 @@ object BackupManager {
         cols: List<String>,
         col: Map<String, Int>?,
         catByKey: Map<String, String>,
-        txs: MutableList<Tx>
+        txs: MutableList<Tx>,
+        fpSeen: MutableMap<String, Int>
     ): String? {
         fun cell(key: String): String =
             (col?.get(key)?.takeIf { it in cols.indices } ?: -1).let { if (it >= 0) cols[it].trim() else "" }
@@ -157,18 +160,27 @@ object BackupManager {
         val note = if (col != null) cell("note") else cols.getOrNull(5)?.trim() ?: ""
         val merchant = merchantRaw.ifBlank { note.ifBlank { "未知商户" } }
         val catLabel = if (col != null) cell("category") else cols.getOrNull(4)?.trim() ?: ""
-        // 三级瀑布：① 账单自带分类列（支付宝）→ ② 商户名关键词（微信没有分类列）→ ③ 商品名 → 其他
+        // 三级瀑布：① 账单自带分类列（支付宝）→ ② 商户名/商品名词（微信没有分类列）
+        // → ③ 平台词（先扫商品名词的品类词，认不出才回退平台默认）→ 其他（D7）。
+        // 商户名是平台词时跳过其关键词级（「美团-药房」里的「外卖」不能抢在商品名「阿莫西林」前面）
+        val plat = platformCategory(merchant)
+        // 注意：if 不能直接嵌进 Elvis 链（else 分支会吞掉后续 ?:），先落到局部变量
+        val merchantCat = if (plat == null) keywordCategory(merchant) else null
         val category = catByKey[catLabel]
             ?: Categories.all.firstOrNull { it.key == catLabel }?.key
             ?: keywordCategory(catLabel)
-            ?: keywordCategory(merchant)
+            ?: merchantCat
             ?: keywordCategory(note)
+            ?: plat
             ?: "other"
         // ID：有订单号列用它（重导入可去重）；没有则用 商户+金额+时间 指纹，
         // 否则每次导入都是随机 UUID → 重复导入会重复记账
         val idRaw = if (col != null) cell("id") else cols.getOrNull(0)?.trim() ?: ""
         val id = idRaw.ifBlank {
-            "fp_" + fingerprint("$merchant|${round2(kotlin.math.abs(amount))}|$ts")
+            // D9：同文件内同指纹的第 2 笔缀 -2 消歧，避免同秒拆单被去重吃掉
+            val fp = fingerprint("$merchant|${round2(kotlin.math.abs(amount))}|$ts")
+            val n = fpSeen.merge(fp, 1, Int::plus) ?: 1
+            if (n == 1) "fp_$fp" else "fp_$fp-$n"
         }
         val source = when (if (col != null) cell("source") else cols.getOrNull(7)?.trim() ?: "") {
             "分享" -> "share"
@@ -188,21 +200,23 @@ object BackupManager {
     /**
      * 关键词分类瀑布（2.3 修法）：微信账单没有消费分类列，「交易类型」是支付类别，
      * 只能靠商户名/商品名兜底。返回 null 表示认不出，交给下一级。
+     * D7：平台词（美团/饿了么/淘宝/抖音…）不在这里——平台名不表达品类，
+     * 「美团买药」会被误判成餐饮、「抖音购物」误判成娱乐，改由 platformCategory 第 3 级处理。
      */
     private fun keywordCategory(s: String): String? = when {
         s.isBlank() -> null
         listOf(
             "餐饮", "美食", "外卖", "咖啡", "奶茶", "餐厅", "快餐", "火锅", "茶饮",
             "星巴克", "瑞幸", "麦当劳", "肯德基", "海底捞", "喜茶", "蜜雪", "沪上阿姨",
-            "华莱士", "老乡鸡", "真功夫", "美团", "饿了么"
+            "华莱士", "老乡鸡", "真功夫"
         ).any { s.contains(it) } -> "dining"
         listOf(
             "交通", "出行", "骑行", "加油", "地铁", "公交", "打车", "停车",
             "滴滴", "高德", "中石化", "中石油", "铁路", "12306", "航空"
         ).any { s.contains(it) } -> "transport"
         listOf(
-            "购物", "服饰", "数码", "美妆", "百货", "淘宝", "京东", "拼多多", "天猫",
-            "优衣库", "耐克", "阿迪", "小米", "华为", "苹果", "名创", "屈臣氏"
+            "购物", "服饰", "数码", "美妆", "百货",
+            "优衣库", "耐克", "阿迪", "小米", "华为", "名创", "屈臣氏"
         ).any { s.contains(it) } -> "shopping"
         listOf(
             "日用", "生活缴费", "水电", "话费", "充值", "便利店", "盒马", "永辉",
@@ -210,10 +224,22 @@ object BackupManager {
         ).any { s.contains(it) } -> "daily"
         listOf(
             "娱乐", "休闲", "文化", "影视", "游戏", "会员", "爱奇艺", "腾讯视频",
-            "网易云", "哔哩哔哩", "B站", "抖音", "优酷"
+            "网易云", "哔哩哔哩", "B站", "优酷"
         ).any { s.contains(it) } -> "entertainment"
         listOf("医疗", "健康", "医药", "药房", "医院", "诊所").any { s.contains(it) } -> "health"
         listOf("学习", "教育", "图书", "书店", "网课", "培训").any { s.contains(it) } -> "education"
+        else -> null
+    }
+
+    /**
+     * D7 第 3 级：平台词判别。命中平台名时先在商品名词里扫品类词（note 已在上一级扫过，
+     * 走到这里说明商品名词也没有品类词），按平台性质回退：外卖平台→餐饮、购物平台→购物。
+     * 「苹果」已从商户词表移除（水果苹果/Apple 支付都容易误判）。
+     */
+    private fun platformCategory(s: String): String? = when {
+        s.isBlank() -> null
+        listOf("美团", "饿了么").any { s.contains(it) } -> "dining"
+        listOf("淘宝", "京东", "拼多多", "天猫", "抖音", "快手").any { s.contains(it) } -> "shopping"
         else -> null
     }
 

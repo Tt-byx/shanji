@@ -5,6 +5,7 @@ import android.content.Context
 import com.shanji.app.data.db.toDomain
 import com.shanji.app.ui.widget.ShanjiWidgetProvider
 import com.shanji.app.ui.widget.WidgetViews
+import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.YearMonth
 
@@ -19,34 +20,43 @@ object WidgetUpdater {
 
     private const val PREFS = "shanji_widget_snapshot"
 
-    /** 数据变化后调用：重算快照并刷新桌面小组件（直接读库，不依赖 Flow 加载时机） */
+    private val scope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
+
+    /**
+     * 数据变化后调用：重算快照并刷新桌面小组件。
+     * D3：查询与写 prefs 都在内部 IO 协程完成，调用方（notifyChanged，写库协程/UI 线程）
+     * 不再被 runBlocking 卡住。
+     */
     fun update(context: Context) {
-        runCatching {
-            val db = com.shanji.app.data.db.AppDatabase.getInstance(context)
-            val txs = kotlinx.coroutines.runBlocking { db.txDao().listAll() }
-                .map { it.toDomain() }
-            val budget = kotlinx.coroutines.runBlocking { db.budgetDao().listAll() }
-                .firstOrNull { it.scope == "total" }?.amount ?: 0.0
-            val today = LocalDate.now()
-            val ym = YearMonth.now()
-            val snap = Snapshot(
-                monthSpent = BudgetCalc.spentTotal(txs, ym),
-                todaySpent = round2(
-                    txs.filter {
-                        it.type == "expense" &&
-                                java.time.Instant.ofEpochMilli(it.ts)
-                                    .atZone(java.time.ZoneId.systemDefault())
-                                    .toLocalDate() == today
-                    }.sumOf { it.amount }
-                ),
-                budget = budget
-            )
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putFloat("monthSpent", snap.monthSpent.toFloat())
-                .putFloat("todaySpent", snap.todaySpent.toFloat())
-                .putFloat("budget", snap.budget.toFloat())
-                .apply()
-            ShanjiWidgetProvider.refresh(context)
+        scope.launch {
+            runCatching {
+                val db = com.shanji.app.data.db.AppDatabase.getInstance(context)
+                val txs = db.txDao().listAll().map { it.toDomain() }
+                val budget = db.budgetDao().listAll()
+                    .firstOrNull { it.scope == "total" }?.amount ?: 0.0
+                val today = LocalDate.now()
+                val ym = YearMonth.now()
+                val snap = Snapshot(
+                    monthSpent = BudgetCalc.spentTotal(txs, ym),
+                    todaySpent = round2(
+                        txs.filter {
+                            it.type == "expense" &&
+                                    java.time.Instant.ofEpochMilli(it.ts)
+                                        .atZone(java.time.ZoneId.systemDefault())
+                                        .toLocalDate() == today
+                        }.sumOf { it.amount }
+                    ),
+                    budget = budget
+                )
+                context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                    .putFloat("monthSpent", snap.monthSpent.toFloat())
+                    .putFloat("todaySpent", snap.todaySpent.toFloat())
+                    .putFloat("budget", snap.budget.toFloat())
+                    .apply()
+                ShanjiWidgetProvider.refresh(context)
+            }
         }
     }
 

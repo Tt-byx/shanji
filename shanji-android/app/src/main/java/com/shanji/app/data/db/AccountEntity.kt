@@ -21,7 +21,8 @@ data class AccountEntity(
 
 fun AccountEntity.toDomain(): Account = Account(
     id = id, name = name, type = type,
-    initialBalance = initialBalance, isDefault = isDefault == 1
+    initialBalance = initialBalance, isDefault = isDefault == 1,
+    sortOrder = sortOrder   // D11：带上排序号，否则 domain 恒 0、排序不稳定
 )
 
 fun Account.toEntity(updatedAt: Long = System.currentTimeMillis()): AccountEntity =

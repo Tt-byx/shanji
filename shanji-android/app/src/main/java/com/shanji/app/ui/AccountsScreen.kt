@@ -52,6 +52,8 @@ fun AccountsScreen(onTransfer: () -> Unit = {}) {
 
     var showAdd by remember { mutableStateOf(false) }
     var editingAcc by remember { mutableStateOf<Account?>(null) }
+    // U4：删除账户先确认，并写清后果（不改数据语义，只加确认+文案）
+    var confirmDelAcc by remember { mutableStateOf<Account?>(null) }
 
     val total = accounts.sumOf { Ledger.accountBalance(it, txs) }
 
@@ -156,9 +158,23 @@ fun AccountsScreen(onTransfer: () -> Unit = {}) {
                 AppStore.accounts.update(acc.copy(name = name, type = type, initialBalance = balance))
                 editingAcc = null
             },
-            onDelete = { AppStore.accounts.remove(acc.id); editingAcc = null },
+            onDelete = { confirmDelAcc = acc; editingAcc = null },
             onSetDefault = { AppStore.accounts.setDefault(acc.id) },
             onDismiss = { editingAcc = null }
+        )
+    }
+
+    // U4：删除账户二次确认（后果写明：历史账单保留、账户名显示回退）
+    confirmDelAcc?.let { acc ->
+        ConfirmDeleteDialog(
+            title = "删除账户「${acc.name}」？",
+            message = "不可恢复。该账户的历史账单会保留，但账户名将显示为「现金」；" +
+                "涉及该账户的余额统计会减少 ¥${fmtAmount(Ledger.accountBalance(acc, txs))}。",
+            onConfirm = {
+                AppStore.accounts.remove(acc.id)
+                confirmDelAcc = null
+            },
+            onDismiss = { confirmDelAcc = null }
         )
     }
 }

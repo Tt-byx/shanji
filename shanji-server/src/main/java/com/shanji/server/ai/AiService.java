@@ -286,13 +286,14 @@ public class AiService {
             throw new BizException(HttpStatus.BAD_REQUEST, "说点什么吧");
         }
         String out = chat(buildChatSystem(req.persona()), buildChatUser(req), 0.4);
-        // 兼容 #ACT# 首行协议
+        // 兼容 #ACT# 首行协议；JSON 可能跨行（模型 pretty-print），按括号配平切（S5）
         String reply = out;
         java.util.ArrayList<AiDtos.Action> actions = new java.util.ArrayList<>();
-        int nl = out.indexOf('\n');
-        String head = (nl >= 0 ? out.substring(0, nl) : out).trim();
-        if (head.startsWith("#ACT#")) {
-            JsonNode j = extractJson(head.substring(5));
+        String t = out.trim();
+        if (t.startsWith("#ACT#")) {
+            int brace = t.indexOf('{');
+            int end = brace >= 0 ? jsonEnd(t, brace) : -1;
+            JsonNode j = end > 0 ? extractJson(t.substring(brace, end)) : null;
             if (j != null) {
                 for (JsonNode a : j.path("actions")) {
                     if (!a.path("fn").asText("").isBlank()) {
@@ -302,7 +303,7 @@ public class AiService {
                         ));
                     }
                 }
-                reply = nl >= 0 ? out.substring(nl + 1).trim() : "";
+                reply = t.substring(end).trim();
             }
         } else {
             JsonNode j = extractJson(out);
@@ -311,6 +312,31 @@ public class AiService {
             }
         }
         return new AiDtos.ChatResult(reply, actions);
+    }
+
+    /**
+     * 从 from 处的 {/［ 起找配平的结束位置（字符串感知，返回结束下标+1）；未配平返回 -1。
+     * S5：#ACT# 协议不再假设单行 JSON。
+     */
+    private static int jsonEnd(String s, int from) {
+        int depth = 0;
+        boolean inStr = false, esc = false;
+        for (int i = from; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (inStr) {
+                if (esc) esc = false;
+                else if (c == '\\') esc = true;
+                else if (c == '"') inStr = false;
+                continue;
+            }
+            if (c == '"') inStr = true;
+            else if (c == '{' || c == '[') depth++;
+            else if (c == '}' || c == ']') {
+                depth--;
+                if (depth == 0) return i + 1;
+            }
+        }
+        return -1;
     }
 
     /** 流式对话：正文逐段回调；需动作时模型首行输出 #ACT#JSON，服务端吞掉该行改走 onAct */
@@ -362,23 +388,28 @@ public class AiService {
                                 onDelta.accept(delta);
                                 continue;
                             }
-                            // 首行还在缓冲：判断是不是 #ACT# 动作行
+                            // 首行缓冲：按 JSON 括号配平切（S5），不再等换行——
+                            // 模型 pretty-print 的跨行动作 JSON 不会再被腰斩（动作丢 + 正文混 JSON 垃圾）
                             actBuf.append(delta);
-                            int nl = actBuf.indexOf("\n");
-                            if (nl >= 0) {
-                                String first = actBuf.substring(0, nl).trim();
-                                actDone[0] = true;
-                                if (first.startsWith("#ACT#")) {
-                                    onAct.accept(first.substring(5));
-                                } else if (!first.isEmpty()) {
-                                    onDelta.accept(actBuf.substring(0, nl));
+                            String buf = actBuf.toString();
+                            if (buf.length() < 5 && "#ACT#".startsWith(buf)) {
+                                // 还分不清是不是动作行，继续攒
+                            } else if (buf.startsWith("#ACT#")) {
+                                int brace = buf.indexOf('{');
+                                int end = brace >= 0 ? jsonEnd(buf, brace) : -1;
+                                if (end > 0) {
+                                    actDone[0] = true;
+                                    onAct.accept(buf.substring(brace, end));
+                                    String rest = buf.substring(end);
+                                    if (!rest.isEmpty()) onDelta.accept(rest);
+                                } else if (buf.length() > 4096) {
+                                    // 超长未配平：不是动作行，直接放行
+                                    actDone[0] = true;
+                                    onDelta.accept(buf);
                                 }
-                                String rest = actBuf.substring(nl + 1);
-                                if (!rest.isEmpty()) onDelta.accept(rest);
-                            } else if (actBuf.length() > 4096) {
-                                // 超长无换行：不是动作行，直接放行
+                            } else {
                                 actDone[0] = true;
-                                onDelta.accept(actBuf.toString());
+                                onDelta.accept(buf);
                             }
                         }
                         if (!actDone[0] && actBuf.length() > 0) {
@@ -473,12 +504,19 @@ public class AiService {
         StringBuilder body = new StringBuilder();
         for (JsonNode l : card.path("lines")) {
             String line = l.asText("").trim();
-            if (!line.isEmpty()) body.append(line).append('\n');
+            // S6：正文里的字面 #CARD# 会截断客户端拆分，换成 #CARD 避免撞协议分隔符
+            if (!line.isEmpty()) body.append(line.replace("#CARD#", "#CARD ")).append('\n');
         }
         if (body.isEmpty()) return null;
         // lines 已经是正文，卡片只留 title + buttons，不再重复渲染一遍
         JsonNode btns = card.path("buttons");
-        String cardJson = "{\"title\":" + quoteJson(card.path("title").asText(""))
+        String title = card.path("title").asText("").trim();
+        if (title.isEmpty()) {
+            // S7：空标题取首条要点截 20 字，不输出空标题卡片
+            String first = card.path("lines").path(0).asText("").trim();
+            title = first.length() > 20 ? first.substring(0, 20) : first;
+        }
+        String cardJson = "{\"title\":" + quoteJson(title)
             + ",\"buttons\":" + (btns.isArray() ? btns.toString() : "[]") + "}";
         return body.toString().trim() + "\n#CARD#" + cardJson;
     }
@@ -521,10 +559,25 @@ public class AiService {
         if (t.isBlank()) throw new BizException(HttpStatus.BAD_GATEWAY, "AI 没回话，稍后再试");
         // 洞察卡：优先按卡片 JSON 组装；模型没按格式输出时退回纯正文（无卡片）
         String reply = statCard ? buildInsightCardReply(t) : null;
-        if (reply == null) reply = t;
+        if (reply == null) {
+            // S7：退回路径若原文是没解析成功的 JSON 骨架，别把裸 JSON 展示给用户
+            reply = statCard && t.startsWith("{")
+                ? "这次没整理出要点，点「重新生成」再试一次。" : t;
+        }
         // 洞察卡带链接和 #CARD# 行，给足余量；通知类仍是纯短文案
         int limit = statCard ? 1500 : 500;
-        return new AiDtos.InsightResult(reply.length() > limit ? reply.substring(0, limit) : reply);
+        if (reply.length() > limit) {
+            // S7：先按 #CARD# 分界——只截正文段，卡片 JSON 不腰斩（否则按钮全丢）
+            int idx = reply.indexOf("\n#CARD#");
+            if (idx >= 0) {
+                String bodyPart = reply.substring(0, idx);
+                reply = (bodyPart.length() > limit ? bodyPart.substring(0, limit) : bodyPart)
+                    + reply.substring(idx);
+            } else {
+                reply = reply.substring(0, limit);
+            }
+        }
+        return new AiDtos.InsightResult(reply);
     }
 
     private static final String SUBSCRIBE_SCAN_SYSTEM = """
@@ -556,17 +609,19 @@ public class AiService {
         return x.length() >= 2 && y.length() >= 2 && (x.contains(y) || y.contains(x));
     }
 
-    /** 按商户匹配账单行：精确优先，其次互为包含 */
+    /** 按商户匹配账单行：精确优先；互为包含的多个分组全部合并（S2：星巴克 + 星巴克臻选 各算各的会漏订阅） */
     private java.util.List<BillRow> matchBills(
         java.util.Map<String, java.util.List<BillRow>> byMerchant, String name) {
         String n = name.trim().toLowerCase();
         if (n.isEmpty()) return java.util.List.of();
         java.util.List<BillRow> direct = byMerchant.get(n);
         if (direct != null) return direct;
+        java.util.ArrayList<BillRow> all = new java.util.ArrayList<>();
         for (var e : byMerchant.entrySet()) {
-            if (nameMatches(e.getKey(), n)) return e.getValue();
+            if (nameMatches(e.getKey(), n)) all.addAll(e.getValue());
         }
-        return java.util.List.of();
+        if (!all.isEmpty()) all.sort(java.util.Comparator.comparing(BillRow::date));
+        return all;
     }
 
     /** 账单里商户出现的最长连续月数 */
@@ -653,6 +708,13 @@ public class AiService {
                     if (dueMonth < 0 || dueMonth > 12) dueMonth = 0;
                 }
                 String accountId = rows.get(rows.size() - 1).accountId();  // 回填账单真实账户（G5）
+                // S1：amount/dayOfMonth 与真实账单交叉校验——金额偏离均值 ±30% 用均值纠正，
+                // 扣款日直接取最近一笔账单的日期（模型张冠李戴的值不出站，客户端不加校验直达 recurring 表）
+                double avg = rows.stream().mapToDouble(BillRow::amount).average().orElse(amount);
+                if (amount <= 0 || Math.abs(amount - avg) > avg * 0.3) {
+                    amount = Math.round(avg * 100) / 100.0;
+                }
+                day = rows.get(rows.size() - 1).date().getDayOfMonth();
                 items.add(new AiDtos.SubscribeScanItem(name, amount, cat, cycle, day, dueMonth, accountId));
             }
         }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -105,6 +106,8 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
     var insightTick by remember { mutableStateOf(0) }  // 「重新生成」自增打破缓存
     // F22：洞察数字可点开溯源明细；#CARD# 操作按钮与 AI 对话同一套协议
     var traceQuery by remember { mutableStateOf<Map<String, String>?>(null) }
+    // U5：addTx 按钮先弹确认再入库（与对话页语义一致，防误触直落真账单）
+    var pendingAdd by remember { mutableStateOf<Map<String, String>?>(null) }
     val insightBody = remember(aiInsight) {
         aiInsight?.let { it.substringBefore("\n#CARD#").substringBefore("#CARD#").trim() } ?: ""
     }
@@ -146,18 +149,22 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
                             ctx, "已设置总预算 ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
                         ).show()
                     }
+                } else {
+                    // U1：AI 没给金额时不能静默无反应
+                    android.widget.Toast.makeText(
+                        ctx, "AI 没给金额，去预算设置里手动填一下", android.widget.Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
             "addTx" -> {
                 val amount = btn.params["amount"]?.toString()?.trim('"')?.toDoubleOrNull() ?: 0.0
                 if (amount > 0) {
-                    com.shanji.app.data.newTx(
-                        btn.params["type"]?.toString()?.trim('"') ?: "expense",
-                        amount,
-                        btn.params["merchant"]?.toString()?.trim('"') ?: "",
-                        btn.params["category"]?.toString()?.trim('"') ?: "other"
-                    ).let { AppStore.store.add(it) }
-                    android.widget.Toast.makeText(ctx, "已记一笔 ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT).show()
+                    // U5：与对话页同语义——先弹确认再入库，防误触/AI 幻觉值直落账本
+                    pendingAdd = btn.params.mapValues { it.value.toString().trim('"') }
+                } else {
+                    android.widget.Toast.makeText(
+                        ctx, "AI 没给金额，这笔没记上", android.widget.Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
@@ -191,8 +198,8 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
         }
         r.getOrNull()?.let {
             aiInsight = it
-            // 同月旧指纹条目一起清掉，避免按指纹无限堆积
-            com.shanji.app.data.MonthlyReportStore.put(ctx, cacheKey, it, clearPrefix = "insight2_${ym}_")
+            // U6：clearPrefix 用全前缀 insight2_——往月条目同样不再被读，一次清光不随月份堆积
+            com.shanji.app.data.MonthlyReportStore.put(ctx, cacheKey, it, clearPrefix = "insight2_")
         }
         aiLoading = false
     }
@@ -302,9 +309,11 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
                         Spacer(Modifier.weight(1f))
                         Text(
                             "重新生成", fontSize = 12.sp, color = Primary,
+                            // U11+U14：点击区域 ≥48dp + 按钮语义
                             modifier = Modifier
-                                .clickable { insightTick++ }
-                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                                .defaultMinSize(minHeight = 48.dp)
+                                .clickable(role = androidx.compose.ui.semantics.Role.Button) { insightTick++ }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
                         )
                     }
                     Spacer(Modifier.height(10.dp))
@@ -356,10 +365,12 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
                                                 if (b.label.isBlank()) return@forEach
                                                 Text(
                                                     b.label, fontSize = 12.sp, color = Primary,
+                                                    // U11+U14：按钮触控区 ≥48dp + 按钮语义
                                                     modifier = Modifier
+                                                        .defaultMinSize(minHeight = 48.dp)
                                                         .background(PrimarySoft, RoundedCornerShape(999.dp))
-                                                        .clickable { insightBtn(b) }
-                                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                                        .clickable(role = androidx.compose.ui.semantics.Role.Button) { insightBtn(b) }
+                                                        .padding(horizontal = 14.dp, vertical = 7.dp)
                                                 )
                                             }
                                         }
@@ -472,6 +483,40 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
 
     // 洞察数字溯源明细（F22 共享弹层；统计页只读，不带编辑入口）
     TraceSheet(query = traceQuery, onDismiss = { traceQuery = null })
+
+    // U5：addTx 确认弹层——金额/商户/分类过目后再入库（type/category 先 sanitize 收口）
+    pendingAdd?.let { p ->
+        val amount = p["amount"]?.toDoubleOrNull() ?: 0.0
+        val (txType, txCat) = com.shanji.app.data.sanitizeAiTx(
+            p["type"] ?: "expense", p["category"] ?: "other"
+        )
+        val merchant = p["merchant"]?.takeIf { it.isNotBlank() } ?: "未填商户"
+        AlertDialog(
+            onDismissRequest = { pendingAdd = null },
+            title = { Text("确认记一笔？") },
+            text = {
+                Text(
+                    "¥${fmtAmount(amount)} · $merchant · " +
+                        "${Categories.of(txCat).label} · ${if (txType == "income") "收入" else "支出"}",
+                    fontSize = 14.sp, lineHeight = 21.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    AppStore.store.add(
+                        com.shanji.app.data.newTx(txType, amount, p["merchant"] ?: "", txCat)
+                    )
+                    android.widget.Toast.makeText(
+                        ctx, "已记一笔 ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                    pendingAdd = null
+                }) { Text("记下") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingAdd = null }) { Text("取消") }
+            }
+        )
+    }
 }
 
 @Composable

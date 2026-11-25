@@ -16,9 +16,10 @@ object RecurringScheduler {
             val today = LocalDate.now()
             for (r in rules) {
                 if (!r.enabled) continue
-                if (today.dayOfMonth < r.dayOfMonth) continue
-                // 29~31 号规则在小月按最后一天生成（withDayOfMonth(31) 在 2 月会抛异常）
+                // 先夹取再比较（D1）：原守卫用未夹取的 dayOfMonth 比较，29/30/31 号规则
+                // 在 4/6/9/11 月与 2 月永远到不了 → 整月漏记，夹取分支不可达
                 val runDate = today.withDayOfMonth(r.dayOfMonth.coerceAtMost(today.lengthOfMonth()))
+                if (today.isBefore(runDate)) continue
                 // 本月已生成则跳过
                 if (r.lastRunDate >= runDate.toString()) continue
 
