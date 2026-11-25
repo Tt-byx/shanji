@@ -23,6 +23,10 @@ interface RecurringDao {
     @Query("SELECT * FROM recurring WHERE deleted = 0")
     suspend fun listAll(): List<RecurringEntity>
 
+    /** 同步推送专用：不过滤墓碑，删除的行要推到服务端才能传播到其它设备 */
+    @Query("SELECT * FROM recurring")
+    suspend fun listAllWithDeleted(): List<RecurringEntity>
+
     @Query("SELECT * FROM recurring WHERE id = :id")
     suspend fun get(id: String): RecurringEntity?
 

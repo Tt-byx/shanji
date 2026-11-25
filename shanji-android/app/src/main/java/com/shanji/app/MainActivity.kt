@@ -103,6 +103,11 @@ fun MainApp(nav: androidx.compose.runtime.State<NavReq>) {
     var chatPresetCategory by remember { mutableStateOf("") }
     // 首页「记一笔」继承浏览月份的时间预填（当前月 = null → 用现在）
     var chatPresetDateTime by remember { mutableStateOf<java.time.LocalDateTime?>(null) }
+    // 首页浏览月份上提到这里（H6）：HomeScreen 里的 rememberSaveable 在 when(screen)
+    // 把它移出组合时 provider 会被注销，切 Tab 回来月份会重置回本月
+    var viewYm by androidx.compose.runtime.saveable.rememberSaveable {
+        mutableStateOf(java.time.YearMonth.now())
+    }
 
     // 系统返回键：子页面返回上级，根页面退出（AI 是 tab，返回回首页）
     androidx.activity.compose.BackHandler(enabled = screen in setOf("search", "calendar", "recurring", "login", "chat")) {
@@ -195,6 +200,8 @@ fun MainApp(nav: androidx.compose.runtime.State<NavReq>) {
                     onLogin = { screen = "login" }
                 )
                 else -> HomeScreen(
+                    viewYm = viewYm,
+                    onViewYmChange = { viewYm = it },
                     onEdit = { id -> editingId = id; showRecord = true },
                     onSearch = { screen = "search" },
                     onAdd = { ym ->

@@ -16,6 +16,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -66,6 +67,7 @@ fun RecurringScreen(onBack: () -> Unit) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var detecting by remember { mutableStateOf(false) }
     var scan by remember { mutableStateOf<ScanResult?>(null) }
+    var existingCount by remember { mutableStateOf(0) }   // 扫描时已有的固定支出数（空结果文案用）
     var showDetect by remember { mutableStateOf(false) }
 
     Column(
@@ -101,6 +103,38 @@ fun RecurringScreen(onBack: () -> Unit) {
             Spacer(Modifier.height(6.dp))
         }
 
+        // G10：老版订阅扣款日曾被截断到 28 号，迁入后提示用户核对一次（点「知道了」不再出现）
+        var showDayHint by remember {
+            mutableStateOf(
+                ctx.getSharedPreferences("shanji_flags", android.content.Context.MODE_PRIVATE)
+                    .getBoolean("sub_day_check_hint", false)
+            )
+        }
+        if (showDayHint) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .background(Primary.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "从旧版迁入的订阅，扣款日可能被压到 28 号，点开每条核对一下日期。",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 17.sp, modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "知道了", fontSize = 12.sp, color = Primary,
+                    modifier = Modifier.clickable {
+                        showDayHint = false
+                        ctx.getSharedPreferences("shanji_flags", android.content.Context.MODE_PRIVATE)
+                            .edit().putBoolean("sub_day_check_hint", false).apply()
+                    }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
         rules.forEach { r ->
             FixedCard(
                 r = r,
@@ -122,6 +156,7 @@ fun RecurringScreen(onBack: () -> Unit) {
                     if (detecting) return@clickable
                     detecting = true
                     val existing = store.list.map { it.merchant }
+                    existingCount = existing.size
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
                             SubscriptionDetector.scan(
@@ -151,40 +186,51 @@ fun RecurringScreen(onBack: () -> Unit) {
     if (showDetect) {
         val result = scan
         val found = result?.items ?: emptyList()
+        val noData = result?.error == "没有可分析的账单"
         AlertDialog(
             onDismissRequest = { showDetect = false },
             title = {
+                // 三态标题：有结果 / AI 通了没新的 / AI 不可用降级（不混成一句话，H3）
                 Text(
                     when {
-                        found.isEmpty() && result?.usedAi == true -> "AI 没认出新的订阅"
-                        found.isEmpty() -> "没认出新的订阅"
-                        else -> "认出 ${found.size} 个订阅"
+                        found.isNotEmpty() -> "认出 ${found.size} 个订阅"
+                        result?.usedAi == true -> "没发现新的固定支出"
+                        noData -> "没有可分析的账单"
+                        else -> "AI 暂不可用，已用本地规则识别"
                     }
                 )
             },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    if (found.isEmpty()) {
-                        Text(
-                            "没有找到「连续 3 个月以上、金额稳定」的固定支出。" +
-                                "可能是数据还不够，或者这些支出本来就不固定。",
-                            fontSize = 13.sp
-                        )
-                    } else {
-                        Text(
-                            "识别方式：" + (if (result?.usedAi == true) "AI 分析账单" else "本地规则") +
-                                "，确认后加进列表，到期前会提醒你：",
-                            fontSize = 13.sp
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        found.forEach {
+                    when {
+                        found.isNotEmpty() -> {
                             Text(
-                                "· ${it.merchant}  ¥${fmtAmount(it.amount)}/月  每月${it.dayOfMonth}号",
-                                fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                "识别方式：" + (if (result?.usedAi == true) "AI 分析账单" else "本地规则") +
+                                    "，确认后加进列表，到期前会提醒你：",
+                                fontSize = 13.sp
                             )
+                            Spacer(Modifier.height(8.dp))
+                            found.forEach {
+                                Text(
+                                    "· ${it.merchant}  ¥${fmtAmount(it.amount)}" +
+                                        if (it.cycle == "yearly") "/年  每年${it.dueMonth}月"
+                                        else "/月  每月${it.dayOfMonth}号",
+                                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
+                        result?.usedAi == true -> Text(
+                            "账单里没有其他「连续 3 个月以上、金额稳定」的支出，" +
+                                "已有的 $existingCount 个固定支出已跳过。",
+                            fontSize = 13.sp
+                        )
+                        noData -> Text("账单还没有数据，记几笔再来识别。", fontSize = 13.sp)
+                        else -> Text(
+                            "本地规则也没找到新的固定支出：可能数据还不够，或者这些支出本来就不固定。",
+                            fontSize = 13.sp
+                        )
                     }
-                    if (result != null && !result.usedAi && !result.error.isNullOrBlank()) {
+                    if (result != null && !result.usedAi && !result.error.isNullOrBlank() && !noData) {
                         Spacer(Modifier.height(8.dp))
                         Text(result.error, fontSize = 12.sp, color = Red)
                     }
@@ -286,6 +332,13 @@ private fun FixedCard(r: Recurring, onEdit: () -> Unit, onToggle: (Boolean) -> U
             Switch(
                 checked = r.enabled,
                 onCheckedChange = onToggle
+            )
+            // H4：右箭头提示卡片可点开编辑（原来只有开关，用户不知道能点）
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "编辑",
+                tint = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.padding(start = 2.dp)
             )
         }
     }

@@ -126,11 +126,26 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
                 if (amount > 0) {
                     val scopeName = btn.params["scope"]?.toString()?.trim('"') ?: "total"
                     val cat = btn.params["category"]?.toString()?.trim('"') ?: ""
-                    AppStore.budgets.set(if (scopeName == "category") "category" else "total", cat, amount)
-                    val label = if (scopeName == "category") "${Categories.of(cat).label}预算" else "总预算"
-                    android.widget.Toast.makeText(
-                        ctx, "已设置${label} ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    if (scopeName == "category") {
+                        // G11：分类 key 合法性校验，非法则忽略并提示（避免存出「其他」预算/撞通知 id）
+                        val catKey = com.shanji.app.data.normalizeCatKey(cat)
+                        if (catKey == null) {
+                            android.widget.Toast.makeText(
+                                ctx, "分类「$cat」不认识，预算没设置", android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            AppStore.budgets.set("category", catKey, amount)
+                            android.widget.Toast.makeText(
+                                ctx, "已设置${Categories.of(catKey).label}预算 ¥${fmtAmount(amount)}",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    } else {
+                        AppStore.budgets.set("total", "", amount)
+                        android.widget.Toast.makeText(
+                            ctx, "已设置总预算 ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
             }
             "addTx" -> {
@@ -154,12 +169,14 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
     androidx.compose.runtime.LaunchedEffect(ym, dataVersion, insightTick) {
         if (insights.isEmpty() || isWeek) { aiLoading = false; return@LaunchedEffect }
         // 缓存 key 必须是数据指纹：进程内 version 重启归零会撞上别的时期的旧缓存（同屏两个矛盾数字），
-        // 而且每写一次库 version++ 会让缓存永远不命中、每次进页都白调 AI
-        val fp = txs.fold(0) { h, t ->
+        // 而且每写一次库 version++ 会让缓存永远不命中、每次进页都白调 AI。
+        // 指纹只算当月账单（改 9 月的账不该让 11 月缓存失效）；Long 位宽防 32 位碰撞（G7/G8）
+        val fp = Ledger.monthTx(txs, ym).fold(0L) { h, t ->
             31 * h + t.id.hashCode() + 37 * t.amount.hashCode() +
                 41 * t.category.hashCode() + 43 * t.ts.hashCode()
         }
-        val cacheKey = "insight_${ym}_$fp"
+        // insight2 前缀：卡片协议改成「lines=正文」后旧缓存格式不同，换前缀一次性作废
+        val cacheKey = "insight2_${ym}_$fp"
         if (insightTick == 0) {
             com.shanji.app.data.MonthlyReportStore.get(ctx, cacheKey)?.let {
                 aiInsight = it; aiLoading = false; return@LaunchedEffect
@@ -175,7 +192,7 @@ fun StatsScreen(onCalendar: () -> Unit = {}) {
         r.getOrNull()?.let {
             aiInsight = it
             // 同月旧指纹条目一起清掉，避免按指纹无限堆积
-            com.shanji.app.data.MonthlyReportStore.put(ctx, cacheKey, it, clearPrefix = "insight_${ym}_")
+            com.shanji.app.data.MonthlyReportStore.put(ctx, cacheKey, it, clearPrefix = "insight2_${ym}_")
         }
         aiLoading = false
     }

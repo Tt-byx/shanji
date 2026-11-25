@@ -15,6 +15,8 @@ import com.shanji.app.MainActivity
 import com.shanji.app.R
 import com.shanji.app.data.db.AppDatabase
 import com.shanji.app.data.db.toDomain
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
 import java.time.DayOfWeek
 import java.time.LocalDate
@@ -179,40 +181,54 @@ object ProactiveAi {
         // 1) 总预算超支 10% → 每月提醒一次，带一条能落地的省钱建议
         val totalBudget = budgets.firstOrNull { it.scope == "total" }?.amount ?: 0.0
         val monthSpent = BudgetCalc.spentTotal(txs, ym)
-        if (totalBudget > 0 && monthSpent > totalBudget * 1.1 && p.getString("over_total", "") != ymKey) {
-            val over = monthSpent - totalBudget
-            val stats = "本月总预算¥${fmtAmount(totalBudget)}，已花¥${fmtAmount(monthSpent)}，超¥${fmtAmount(over)}。" +
-                "本月分类支出：" + Ledger.categoryBreakdown(Ledger.monthTx(txs, ym))
-                    .joinToString("、") { "${it.cat.label}¥${fmtAmount(it.amount)}" }
-            val ai = askAi(context, "budget_over", stats)
-            // marker 在通知真正发出去之后才写：没通知权限时先写 marker 会永久静默
-            val ok = notify(
-                context, ID_OVER_TOTAL, "⚠ 本月总预算已超 ¥${fmtAmount(over)}",
-                (ai ?: "已花 ¥${fmtAmount(monthSpent)} / 预算 ¥${fmtAmount(totalBudget)}，先停一停非必要支出。").trim()
-            )
-            if (ok) p.edit().putString("over_total", ymKey).apply()
+        val totalNeed = totalBudget > 0 && monthSpent > totalBudget * 1.1 &&
+            p.getString("over_total", "") != ymKey
+        val over = monthSpent - totalBudget
+        val totalStats = "本月总预算¥${fmtAmount(totalBudget)}，已花¥${fmtAmount(monthSpent)}，超¥${fmtAmount(over)}。" +
+            "本月分类支出：" + Ledger.categoryBreakdown(Ledger.monthTx(txs, ym))
+                .joinToString("、") { "${it.cat.label}¥${fmtAmount(it.amount)}" }
+
+        // 2) 分类预算超支 10% → 每月每类一次（先算出待办，AI 调用统一并发，见下）
+        val catOvers = budgets.filter { it.scope == "category" && it.amount > 0 }.mapNotNull { b ->
+            val spent = BudgetCalc.spentOf(txs, ym, b.category)
+            if (spent <= b.amount * 1.1) return@mapNotNull null
+            val key = "over_${b.category}"
+            if (p.getString(key, "") == ymKey) return@mapNotNull null
+            b to spent
         }
 
-        // 2) 分类预算超支 10% → 每月每类一次
-        budgets.filter { it.scope == "category" && it.amount > 0 }.forEach { b ->
-            val spent = BudgetCalc.spentOf(txs, ym, b.category)
-            if (spent <= b.amount * 1.1) return@forEach
-            val key = "over_${b.category}"
-            if (p.getString(key, "") == ymKey) return@forEach
-            val label = Categories.of(b.category).label
-            val over = spent - b.amount
-            val ai = askAi(
-                context, "budget_over",
-                "${label}预算¥${fmtAmount(b.amount)}，本月已花¥${fmtAmount(spent)}，超¥${fmtAmount(over)}。" +
-                    "给出一条最能省下这笔的建议，20字以内。"
-            )
-            // 通知 id 用分类的固定下标：原来用 forEachIndexed 下标，增删分类预算后 id 漂移互相顶掉
-            val catIdx = Categories.all.indexOfFirst { it.key == b.category }.coerceAtLeast(0)
-            val ok = notify(
-                context, ID_CAT_BASE + catIdx, "⚠ ${label}超支 ¥${fmtAmount(over)}",
-                (ai ?: "已花 ¥${fmtAmount(spent)} / 预算 ¥${fmtAmount(b.amount)}，${label}这月得收着点。").trim()
-            )
-            if (ok) p.edit().putString(key, ymKey).apply()
+        // G12：总预算 + 每个超支分类原来是串行 askAi（各 15s），3 个分类就超 30s 外层，
+        // 后面的提醒当天全被砍掉。改成并发发起、逐条 await 发通知（marker 时机不变）。
+        coroutineScope {
+            val totalJob = if (totalNeed) async { askAi(context, "budget_over", totalStats) } else null
+            val catJobs = catOvers.map { (b, spent) ->
+                val label = Categories.of(b.category).label
+                val stats = "${label}预算¥${fmtAmount(b.amount)}，本月已花¥${fmtAmount(spent)}，" +
+                    "超¥${fmtAmount(spent - b.amount)}。给出一条最能省下这笔的建议，20字以内。"
+                Triple(b, spent, async { askAi(context, "budget_over", stats) })
+            }
+
+            totalJob?.let { job ->
+                val ai = job.await()
+                // marker 在通知真正发出去之后才写：没通知权限时先写 marker 会永久静默
+                val ok = notify(
+                    context, ID_OVER_TOTAL, "⚠ 本月总预算已超 ¥${fmtAmount(over)}",
+                    (ai ?: "已花 ¥${fmtAmount(monthSpent)} / 预算 ¥${fmtAmount(totalBudget)}，先停一停非必要支出。").trim()
+                )
+                if (ok) p.edit().putString("over_total", ymKey).apply()
+            }
+            for ((b, spent, job) in catJobs) {
+                val ai = job.await()
+                val label = Categories.of(b.category).label
+                val catOver = spent - b.amount
+                // 通知 id 用分类的固定下标：原来用 forEachIndexed 下标，增删分类预算后 id 漂移互相顶掉
+                val catIdx = Categories.all.indexOfFirst { it.key == b.category }.coerceAtLeast(0)
+                val ok = notify(
+                    context, ID_CAT_BASE + catIdx, "⚠ ${label}超支 ¥${fmtAmount(catOver)}",
+                    (ai ?: "已花 ¥${fmtAmount(spent)} / 预算 ¥${fmtAmount(b.amount)}，${label}这月得收着点。").trim()
+                )
+                if (ok) p.edit().putString("over_${b.category}", ymKey).apply()
+            }
         }
 
         // 3) 没分类的账单攒多了 → 提醒用 AI 批量归类

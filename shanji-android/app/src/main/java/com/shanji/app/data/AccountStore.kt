@@ -9,7 +9,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
@@ -35,7 +34,8 @@ class AccountStore(context: Context) {
         }
     }
 
-    private fun seedDefaults() {
+    // G13：写库走 scope（IO），不再 runBlocking 卡主线程
+    private suspend fun seedDefaults() {
         val now = System.currentTimeMillis()
         val defaults = listOf(
             Account("acc_wechat", "微信", "wechat", 0.0, false, 0),
@@ -43,7 +43,7 @@ class AccountStore(context: Context) {
             Account("acc_cash", "现金", "cash", 0.0, true, 2),
             Account("acc_bank", "银行卡", "bank", 0.0, false, 3)
         )
-        runBlocking { dao.insertAll(defaults.map { it.toEntity(now) }) }
+        dao.insertAll(defaults.map { it.toEntity(now) })
     }
 
     fun defaultId(): String =
@@ -60,19 +60,19 @@ class AccountStore(context: Context) {
             initialBalance = initialBalance, isDefault = false,
             sortOrder = list.size
         )
-        runBlocking { dao.insert(acc.toEntity()) }
+        scope.launch { dao.insert(acc.toEntity()) }
     }
 
     fun update(account: Account) {
-        runBlocking { dao.update(account.copy(name = account.name.trim().take(12)).toEntity()) }
+        scope.launch { dao.update(account.copy(name = account.name.trim().take(12)).toEntity()) }
     }
 
     fun remove(id: String) {
-        runBlocking { dao.softDelete(id, System.currentTimeMillis()) }
+        scope.launch { dao.softDelete(id, System.currentTimeMillis()) }
     }
 
     fun setDefault(id: String) {
-        runBlocking {
+        scope.launch {
             dao.clearDefault()
             dao.setDefault(id, System.currentTimeMillis())
         }

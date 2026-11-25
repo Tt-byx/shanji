@@ -77,7 +77,7 @@ data class AiVisionData(
 
 @Serializable
 data class SubscribeScanReq(
-    /** 近 N 个月账单摘要，每行：yyyy-MM-dd|商户|金额|分类key（服务端不存，只做本次判断） */
+    /** 近 N 个月账单摘要，每行：yyyy-MM-dd|商户|金额|分类key|账户id（服务端不存，只做本次判断） */
     val txSummary: String,
     /** 已有订阅/规则的商户名，识别结果里跳过 */
     val existing: List<String> = emptyList()
@@ -90,7 +90,8 @@ data class SubscribeScanItem(
     val category: String = "other",
     val cycle: String = "monthly",   // monthly | yearly
     val dayOfMonth: Int = 1,
-    val dueMonth: Int = 0            // yearly 1~12
+    val dueMonth: Int = 0,           // yearly 1~12
+    val accountId: String = ""       // 服务端从账单摘要回填的账户 id
 )
 
 @Serializable

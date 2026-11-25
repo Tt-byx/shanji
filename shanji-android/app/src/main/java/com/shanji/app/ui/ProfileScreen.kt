@@ -67,11 +67,13 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
     var showNotify by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
     var showBudget by remember { mutableStateOf(false) }
+    var showData by remember { mutableStateOf(false) }   // H7：导出/导入/清空收进「数据」二级页
     // 登录态变化时触发重组（logout/login 后立即刷新卡片）
     var authVersion by remember { mutableStateOf(0) }
 
     var pendingImport by remember { mutableStateOf<List<Tx>?>(null) }
-    var pendingCsv by remember { mutableStateOf<Pair<Int, List<Tx>>?>(null) }   // CSV 导入：总行数 to 新账单
+    // CSV 导入：解析结果 to 新账单（含失败行计数与样例）
+    var pendingCsv by remember { mutableStateOf<Pair<BackupManager.CsvParseResult, List<Tx>>?>(null) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -122,16 +124,25 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 val text = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
                     ?: error("读取失败")
                 BackupManager.parseCsv(text)
-            }.onSuccess { list ->
-                val existing = txs.mapTo(HashSet()) { it.id }
-                val fresh = list.filter { it.id !in existing }
-                if (list.isEmpty()) {
-                    android.widget.Toast.makeText(context, "没读到账单，检查是不是闪记导出的 CSV", android.widget.Toast.LENGTH_SHORT).show()
+            }.onSuccess { res ->
+                if (res.total == 0) {
+                    android.widget.Toast.makeText(context, "表格里没有数据行", android.widget.Toast.LENGTH_SHORT).show()
+                } else if (res.txs.isEmpty()) {
+                    // 全部行都解析失败：给出失败原因样例
+                    android.widget.Toast.makeText(
+                        context, "没读到账单：" + (res.failed.firstOrNull() ?: "格式无法识别"),
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
                 } else {
-                    pendingCsv = list.size to fresh
+                    val existing = txs.mapTo(HashSet()) { it.id }
+                    pendingCsv = res to res.txs.filter { it.id !in existing }
                 }
             }.onFailure {
-                android.widget.Toast.makeText(context, "CSV 解析失败，检查文件格式", android.widget.Toast.LENGTH_SHORT).show()
+                // 表头不认识等：message 已是给用户看的完整提示
+                android.widget.Toast.makeText(
+                    context, it.message ?: "CSV 解析失败，检查文件格式",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
@@ -237,29 +248,48 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
                 MenuItem("AI 主动提醒") { showNotify = true }
                 HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("载入演示数据") { confirmDemo = true }
-                HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("导出数据 (JSON)") {
-                    exportLauncher.launch("闪记账单_" + java.time.LocalDate.now() + ".json")
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("导出表格 (CSV)") {
-                    csvLauncher.launch("闪记账单_" + java.time.LocalDate.now() + ".csv")
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("导入表格 (CSV)") {
-                    csvImportLauncher.launch(
-                        arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*")
-                    )
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("恢复备份") {
-                    importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
-                }
-                HorizontalDivider(color = MaterialTheme.colorScheme.background)
-                MenuItem("清空全部数据", danger = true) { confirmClear = true }
+                // H7：10 个菜单一屏放不下，导出/导入/恢复/清空收进「数据」二级页
+                MenuItem("数据管理") { showData = true }
             }
         }
+    }
+
+    // 「数据」二级页：导出/导入/恢复/演示/清空都在这里
+    if (showData) {
+        AlertDialog(
+            onDismissRequest = { showData = false },
+            title = { Text("数据") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    MenuItem("导出数据 (JSON)") {
+                        showData = false
+                        exportLauncher.launch("闪记账单_" + java.time.LocalDate.now() + ".json")
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background)
+                    MenuItem("导出表格 (CSV)") {
+                        showData = false
+                        csvLauncher.launch("闪记账单_" + java.time.LocalDate.now() + ".csv")
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background)
+                    MenuItem("导入表格 (CSV)") {
+                        showData = false
+                        csvImportLauncher.launch(
+                            arrayOf("text/csv", "text/comma-separated-values", "text/plain", "*/*")
+                        )
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background)
+                    MenuItem("恢复备份") {
+                        showData = false
+                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background)
+                    MenuItem("载入演示数据") { showData = false; confirmDemo = true }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.background)
+                    MenuItem("清空全部数据", danger = true) { showData = false; confirmClear = true }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showData = false }) { Text("关闭") } }
+        )
     }
 
     if (showNotify) {
@@ -372,17 +402,34 @@ fun ProfileScreen(onRecurring: () -> Unit = {}, onLogin: () -> Unit = {}) {
             dismissButton = { TextButton(onClick = { pendingImport = null }) { Text("取消") } }
         )
     }
-    pendingCsv?.let { (total, fresh) ->
+    pendingCsv?.let { (res, fresh) ->
         AlertDialog(
             onDismissRequest = { pendingCsv = null },
             title = { Text("导入 CSV") },
             text = {
-                val dup = total - fresh.size
-                Text(
-                    if (fresh.isEmpty()) "表格里 $total 笔账单都已存在（按 ID 去重），没有新账单可导入。"
-                    else "表格含 $total 笔账单，其中 ${fresh.size} 笔是新的。" +
-                        "按 ID 去重，已有的 $dup 笔不会重复导入，也不会覆盖现有账单。"
-                )
+                val dup = res.txs.size - fresh.size
+                Column {
+                    Text(
+                        "读到 ${res.total} 行 · 成功 ${res.txs.size} 行" +
+                            if (res.failedCount > 0) " · ${res.failedCount} 行无法识别" else ""
+                    )
+                    if (res.failedCount > 0) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            res.failed.take(2).joinToString("\n"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        when {
+                            fresh.isEmpty() -> "${res.txs.size} 笔账单都已存在（按 ID 去重），没有新账单可导入。"
+                            dup > 0 -> "其中 ${fresh.size} 笔是新的。按 ID 去重，已有的 $dup 笔不会重复导入，也不会覆盖现有账单。"
+                            else -> "其中 ${fresh.size} 笔是新的，可导入。"
+                        }
+                    )
+                }
             },
             confirmButton = {
                 TextButton(enabled = fresh.isNotEmpty(), onClick = {

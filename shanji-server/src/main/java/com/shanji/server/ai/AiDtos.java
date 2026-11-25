@@ -42,8 +42,9 @@ public class AiDtos {
     public record VisionResult(Double amount, String merchant, String time) {}
 
     /**
-     * 订阅识别（F7 真调 AI）：客户端送近几个月账单摘要（每行 yyyy-MM-dd|商户|金额|分类key），
-     * 服务端 AI 做语义判断，只认连续按月出现、金额稳定的固定支出。
+     * 订阅识别（F7 真调 AI）：客户端送近几个月账单摘要
+     * （每行 yyyy-MM-dd|商户|金额|分类key|账户id），服务端 AI 做语义判断，
+     * 服务端再做连续性校验（月付需连续 ≥3 月），只认真出现过的固定支出。
      */
     public record SubscribeScanRequest(String txSummary, List<String> existing) {}
 
@@ -53,7 +54,8 @@ public class AiDtos {
         String category,
         String cycle,      // monthly | yearly
         int dayOfMonth,
-        int dueMonth       // yearly 1~12，monthly 为 0
+        int dueMonth,      // yearly 1~12，monthly 为 0
+        String accountId   // 从账单摘要回填的账户 id（识别不出为空）
     ) {}
 
     public record SubscribeScanResult(List<SubscribeScanItem> items) {}

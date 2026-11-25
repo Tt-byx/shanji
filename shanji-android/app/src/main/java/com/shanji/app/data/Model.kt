@@ -75,6 +75,10 @@ object Categories {
         ?: all.first { it.key == "other" }
 }
 
+/** AI 传来的分类可能是 key（dining）也可能是中文 label（餐饮）→ 合法 key；认不出返回 null（G11） */
+fun normalizeCatKey(s: String): String? =
+    Categories.all.firstOrNull { it.key == s || it.label == s }?.key
+
 fun round2(n: Double): Double = Math.round(n * 100) / 100.0
 
 fun newTx(

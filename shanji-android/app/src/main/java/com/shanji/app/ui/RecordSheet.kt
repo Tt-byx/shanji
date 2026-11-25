@@ -173,6 +173,7 @@ fun RecordSheet(
 
     // ===== 语音记账：系统 SpeechRecognizer（免费）→ 识别文本 → doParse =====
     var voiceListening by remember { mutableStateOf(false) }
+    var voiceProcessing by remember { mutableStateOf(false) }   // 已停收音、等识别结果（H5）
     var micGranted by remember {
         mutableStateOf(
             androidx.core.content.ContextCompat.checkSelfPermission(
@@ -183,9 +184,11 @@ fun RecordSheet(
     val voice = remember { VoiceInput(ctx) }
     // 每次重组重挂回调：doParse 捕获的都是当前 remember 的状态 holder，不会过期
     voice.onStateChange = { voiceListening = it }
-    voice.onFail = { msg -> voiceListening = false; nlError = msg }
+    voice.onProcessingChange = { voiceProcessing = it }
+    voice.onFail = { msg -> voiceListening = false; voiceProcessing = false; nlError = msg }
     voice.onResult = { text ->
         voiceListening = false
+        voiceProcessing = false
         nlText = text
         doParse(text)
     }
@@ -237,10 +240,12 @@ fun RecordSheet(
                             }
                         }
                     },
-                    // 语音记账：点一下说话，识别出的句子自动走 AI 解析回填
+                    // 语音记账：点一下说话，识别出的句子自动走 AI 解析回填；
+                    // 「识别中」期间点击无效（宽限期，防止丢掉已识别的结果）
                     trailingIcon = {
                         IconButton(
                             onClick = {
+                                if (voiceProcessing) return@IconButton
                                 if (voiceListening) {
                                     voice.stop()
                                 } else if (micGranted) {
@@ -253,8 +258,16 @@ fun RecordSheet(
                         ) {
                             Icon(
                                 if (voiceListening) Icons.Filled.Mic else Icons.Filled.MicOff,
-                                if (voiceListening) "停止录音" else "语音记账",
-                                tint = if (voiceListening) Red else Primary
+                                when {
+                                    voiceProcessing -> "识别中"
+                                    voiceListening -> "停止录音"
+                                    else -> "语音记账"
+                                },
+                                tint = when {
+                                    voiceProcessing -> Primary
+                                    voiceListening -> Red
+                                    else -> Primary
+                                }
                             )
                         }
                     },

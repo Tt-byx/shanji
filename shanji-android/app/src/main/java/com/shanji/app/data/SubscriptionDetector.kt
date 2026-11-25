@@ -14,7 +14,7 @@ data class ScanResult(val items: List<Recurring>, val usedAi: Boolean, val error
  */
 object SubscriptionDetector {
 
-    /** 近 6 个月支出摘要（每行 yyyy-MM-dd|商户|金额|分类key），最多 400 行防打爆提示词 */
+    /** 近 6 个月支出摘要（每行 yyyy-MM-dd|商户|金额|分类key|账户id），最多 400 行防打爆提示词 */
     fun summaryLines(txs: List<Tx>): String {
         val monthsAgo = YearMonth.now().minusMonths(6)
         return txs.filter {
@@ -24,7 +24,7 @@ object SubscriptionDetector {
             .take(400)
             .joinToString("\n") { t ->
                 val d = toLocalDateTime(t.ts).toLocalDate()
-                "$d|${t.merchant.trim()}|${round2(t.amount)}|${t.category}"
+                "$d|${t.merchant.trim()}|${round2(t.amount)}|${t.category}|${t.accountId.ifBlank { "acc_cash" }}"
             }
     }
 
@@ -43,7 +43,9 @@ object SubscriptionDetector {
                 Recurring(
                     id = "sub_" + UUID.randomUUID().toString().take(8),
                     type = "expense", amount = round2(s.amount), merchant = s.name.trim().take(30),
-                    category = s.category, accountId = accountId,
+                    category = s.category,
+                    // 优先用服务端从账单回填的账户（G5），取不到才用调用方兜底值
+                    accountId = s.accountId.ifBlank { accountId },
                     dayOfMonth = s.dayOfMonth.coerceIn(1, 31),
                     enabled = true, lastRunDate = "",
                     cycle = s.cycle, dueMonth = if (s.cycle == "yearly") s.dueMonth else 0,

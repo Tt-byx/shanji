@@ -22,10 +22,16 @@ class VoiceInput(private val context: Context) {
     /** 录音状态变化（true=正在听） */
     var onStateChange: (Boolean) -> Unit = {}
 
+    /** 处理中状态变化（true=已停止收音、等识别结果）：UI 显示「识别中」 */
+    var onProcessingChange: (Boolean) -> Unit = {}
+
     /** 识别失败（已翻成人话） */
     var onFail: (String) -> Unit = {}
 
     var listening = false
+        private set
+
+    var processing = false
         private set
 
     private var recognizer: SpeechRecognizer? = null
@@ -35,7 +41,7 @@ class VoiceInput(private val context: Context) {
         runCatching { SpeechRecognizer.isRecognitionAvailable(context) }.getOrDefault(false)
 
     fun start() {
-        if (listening) return
+        if (listening || processing) return
         if (!available()) { onFail("这台设备没有语音识别服务"); return }
         val r = recognizer ?: SpeechRecognizer.createSpeechRecognizer(context).also { recognizer = it }
         r.setRecognitionListener(listener)
@@ -52,6 +58,8 @@ class VoiceInput(private val context: Context) {
     }
 
     fun stop() {
+        // 宽限期（H5）：等结果期间不响应停止，避免 cancel() 把已识别出的结果丢掉
+        if (processing) return
         if (!listening) return
         listening = false
         onStateChange(false)
@@ -60,30 +68,37 @@ class VoiceInput(private val context: Context) {
 
     fun destroy() {
         listening = false
+        processing = false
         runCatching { recognizer?.destroy() }
         recognizer = null
     }
 
+    private fun finish() {
+        listening = false
+        processing = false
+        onStateChange(false)
+        onProcessingChange(false)
+    }
+
     private val listener = object : RecognitionListener {
         override fun onResults(results: Bundle?) {
-            listening = false
-            onStateChange(false)
+            finish()
             val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull()?.trim().orEmpty()
             if (text.isNotEmpty()) onResult(text) else onFail("没听清，再说一次")
         }
 
         override fun onError(errorCode: Int) {
-            listening = false
-            onStateChange(false)
+            finish()
             onFail(msgOf(errorCode))
         }
 
         override fun onEndOfSpeech() {
             // 正常顺序是 onEndOfSpeech →（网络延迟）→ onResults。
-            // 这里不能把 listening 置回 false：UI 会提前显示「没在听」，用户以为没听上而重按，
-            // 此时 startListening 还没收到结果 → ERROR_RECOGNIZER_BUSY。
-            // 保持「处理中」，由 onResults / onError 统一收尾。
+            // 保持 listening（UI 显示录音中），另置 processing=「识别中」；
+            // 此期间 stop() 被宽限期挡住（H5），由 onResults / onError 统一收尾。
+            processing = true
+            onProcessingChange(true)
         }
 
         override fun onReadyForSpeech(params: Bundle?) {}

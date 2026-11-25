@@ -36,12 +36,17 @@ fun TraceSheet(
     val month = q["month"] ?: ""
     val cat = q["category"] ?: ""
     val keyword = q["keyword"] ?: ""
+    // 提示词要求 category 用 key，但 LLM 可能给中文「购物」：label/key 两态都认，认不出保留原值给空态提示用
+    val catKey = remember(cat) {
+        if (cat.isBlank()) ""
+        else com.shanji.app.data.Categories.all.firstOrNull { it.key == cat || it.label == cat }?.key ?: cat
+    }
     val hits = remember(q) {
         AppStore.store.txs.filter { t ->
             val inMonth = month.isBlank() || java.time.YearMonth.from(
                 java.time.Instant.ofEpochMilli(t.ts).atZone(java.time.ZoneId.systemDefault())
             ).toString() == month
-            val inCat = cat.isBlank() || t.category == cat
+            val inCat = catKey.isBlank() || t.category == catKey
             val inKw = keyword.isBlank() ||
                 t.merchant.contains(keyword) || t.note.contains(keyword)
             inMonth && inCat && inKw
@@ -54,13 +59,16 @@ fun TraceSheet(
         val total = hits.filter { it.type == "expense" }.sumOf { it.amount }
         Column(Modifier.padding(bottom = 24.dp)) {
             Text(
-                "AI 提到的账单 · ${hits.size} 笔 · 支出合计 ¥${fmtAmount(total)}",
+                if (hits.isEmpty()) "没匹配到账单"
+                else "AI 提到的账单 · ${hits.size} 笔 · 支出合计 ¥${fmtAmount(total)}",
                 fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
             )
             if (hits.isEmpty()) {
+                // 空结果说清原因，避免「点了没反应」的困惑
                 Text(
-                    "没有匹配的账单",
+                    if (cat.isNotBlank()) "没匹配到账单（AI 给的分类「$cat」，账本里没有这一类）"
+                    else "没有匹配的账单",
                     fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
                 )

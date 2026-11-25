@@ -52,10 +52,14 @@ import androidx.compose.material.icons.filled.Add
 import java.time.YearMonth
 
 @Composable
-fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: (YearMonth) -> Unit = {}) {
+fun HomeScreen(
+    viewYm: YearMonth,                       // H6：浏览月份上提到 MainApp，切 Tab 移出组合也不丢
+    onViewYmChange: (YearMonth) -> Unit,
+    onEdit: (String) -> Unit,
+    onSearch: () -> Unit = {},
+    onAdd: (YearMonth) -> Unit = {}
+) {
     val txs = AppStore.store.txs
-    // rememberSaveable：切到统计/AI 再回来（或旋转）不丢浏览月份，原来 remember 每次回首页都重置回本月
-    var viewYm by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(YearMonth.now()) }
     val isCurrent = viewYm == YearMonth.now()
 
     // 统计只在 数据版本/月份 变化时重算：其它重组（滚动、状态切换）不再跑 O(n) 分组
@@ -75,7 +79,7 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: (Year
                 Icon(Icons.Filled.Search, "搜索", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.weight(1f))
-            IconButton(onClick = { viewYm = viewYm.minusMonths(1) }) {
+            IconButton(onClick = { onViewYmChange(viewYm.minusMonths(1)) }) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, "上个月", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             // 月份标签带年份（跨年可区分）；宽度自适应不再锁死 40dp
@@ -84,7 +88,7 @@ fun HomeScreen(onEdit: (String) -> Unit, onSearch: () -> Unit = {}, onAdd: (Year
                 else "${viewYm.year}年${viewYm.monthValue}月",
                 fontSize = 14.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
-            IconButton(onClick = { if (!isCurrent) viewYm = viewYm.plusMonths(1) }, enabled = !isCurrent) {
+            IconButton(onClick = { if (!isCurrent) onViewYmChange(viewYm.plusMonths(1)) }, enabled = !isCurrent) {
                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, "下个月", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }

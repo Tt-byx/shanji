@@ -35,42 +35,186 @@ object BackupManager {
         return sb.toString()
     }
 
-    /**
-     * CSV 导入（与 toCsv 互逆）：BOM/引号/字段内逗号换行都能解析；
-     * 非法行（金额/时间解析不出）静默丢弃，返回可导入的账单列表。
-     */
-    fun parseCsv(text: String): List<Tx> {
-        val rows = splitCsv(text.removePrefix("\uFEFF"))
-        if (rows.isEmpty()) return emptyList()
-        val header = rows.first().map { it.trim() }
-        // 支持表头行顺序与导出一致；找不到必需列则按固定顺序解释
-        val hasHeader = header.any { it.equals("金额", ignoreCase = true) || it.equals("amount", true) }
-        val dataRows = if (hasHeader) rows.drop(1) else rows
+    /** CSV 解析结果：total=数据行数，txs=成功行，failed=失败样例「第N行：原因」（最多 5 条） */
+    data class CsvParseResult(val txs: List<Tx>, val total: Int, val failed: List<String>) {
+        val failedCount: Int get() = total - txs.size
+    }
 
-        val timeParser = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+    /** 表头无法识别时抛出，message 直接给用户看 */
+    class CsvFormatException(message: String) : Exception(message)
+
+    private val timeParsers = listOf(
+        "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd",
+        "yyyy/MM/dd HH:mm:ss", "yyyy/MM/dd HH:mm", "yyyy/MM/dd"
+    ).map { DateTimeFormatter.ofPattern(it) }
+
+    /**
+     * CSV 导入：按表头名映射列（支持闪记自家 / 支付宝 / 微信账单），
+     * 金额/时间解析失败的行计入 failed 并给原因，不再静默丢弃。
+     * 表头不认识时抛 CsvFormatException（message 含实测表头与支持范围提示）。
+     */
+    fun parseCsv(text: String): CsvParseResult {
+        val rows = splitCsv(text.removePrefix("\uFEFF"))
+        if (rows.isEmpty()) return CsvParseResult(emptyList(), 0, emptyList())
+        val header = rows.first().map { it.trim() }
+        val col = resolveColumns(header)   // null：不像表头行 → 按自家固定列序兜底
+        val dataRows = if (col != null) rows.drop(1) else rows
+        if (dataRows.isEmpty()) return CsvParseResult(emptyList(), 0, emptyList())
+
         val catByKey = Categories.all.associateBy({ it.label }, { it.key })
-        return dataRows.mapNotNull { cols ->
-            if (cols.size < 7) return@mapNotNull null   // 至少到「时间」列
-            // 导出列序：ID,类型,金额,商户,分类,备注,时间,来源
-            val id = cols[0].trim().ifBlank { "tx_" + java.util.UUID.randomUUID().toString().take(8) }
-            val type = if (cols[1].trim() == "收入") "income" else "expense"
-            val amount = cols[2].trim().toDoubleOrNull() ?: return@mapNotNull null
-            if (amount <= 0 || amount > 1_000_000) return@mapNotNull null
-            val merchant = cols[3].trim()
-            val catLabel = cols[4].trim()
-            val category = catByKey[catLabel] ?: Categories.all.firstOrNull { it.key == catLabel }?.key ?: "other"
-            val note = cols.getOrNull(5)?.trim() ?: ""
-            val ts = runCatching {
-                java.time.LocalDateTime.parse(cols[6].trim(), timeParser)
-                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-            }.getOrElse { return@mapNotNull null }
-            val source = when (cols.getOrNull(7)?.trim()) {
-                "分享" -> "share"
-                "周期" -> "recurring"
-                else -> "manual"
-            }
-            Tx(id, type, round2(amount), merchant, category, note, ts, source)
+        val txs = mutableListOf<Tx>()
+        val failed = mutableListOf<String>()
+        dataRows.forEachIndexed { i, cols ->
+            val lineNo = i + (if (col != null) 2 else 1)
+            val reason = parseRow(cols, col, catByKey, txs)
+            if (reason != null && failed.size < 5) failed.add("第${lineNo}行：$reason")
         }
+        return CsvParseResult(txs, dataRows.size, failed)
+    }
+
+    /**
+     * 按表头名找必需列；完全不认识表头时抛 CsvFormatException；
+     * 表头缺失但数据像自家格式（>=7 列）时返回 null 走固定列序兜底。
+     * 模糊（contains）匹配只给时间/金额用——ID/收支等必须精确命中，
+     * 否则「商品ID」会被当成交易 ID、「收/付款方式」被当成收支列。
+     */
+    private fun resolveColumns(header: List<String>): Map<String, Int>? {
+        fun find(fuzzy: Boolean, vararg names: String): Int? {
+            for (n in names) {
+                header.indexOfFirst { it.equals(n, ignoreCase = true) }.let { if (it >= 0) return it }
+            }
+            if (fuzzy) {
+                for (n in names) {
+                    header.indexOfFirst { it.contains(n, ignoreCase = true) }.let { if (it >= 0) return it }
+                }
+            }
+            return null
+        }
+        val looksLikeHeader = header.any {
+            it.contains("金额") || it.equals("amount", true) || it.contains("时间") || it.contains("日期")
+        }
+        if (!looksLikeHeader) return null
+        val time = find(fuzzy = true, "交易时间", "时间", "交易日期", "日期", "date", "time")
+        val amount = find(fuzzy = true, "金额(元)", "金额", "交易金额", "amount")
+        if (time == null || amount == null) {
+            val preview = header.take(6).joinToString(",")
+            throw CsvFormatException(
+                "这个 CSV 的表头是「${preview}」，闪记目前支持支付宝/微信账单导出，或闪记自己导出的表格"
+            )
+        }
+        return mapOf(
+            "time" to time,
+            "amount" to amount,
+            "id" to (find(fuzzy = false, "ID", "交易订单号", "交易单号", "订单号") ?: -1),
+            "type" to (find(fuzzy = false, "收/支", "收支", "收入/支出", "交易方向", "类型") ?: -1),
+            "merchant" to (find(fuzzy = false, "交易对方", "商户", "交易方", "商家", "merchant") ?: -1),
+            "category" to (find(fuzzy = false, "交易分类", "交易类型", "分类") ?: -1),
+            "note" to (find(fuzzy = false, "商品说明", "商品", "备注", "note") ?: -1),
+            "source" to (find(fuzzy = false, "来源") ?: -1),
+            "status" to (find(fuzzy = false, "交易状态", "当前状态", "状态") ?: -1)
+        )
+    }
+
+    /** 解析单行成功返回 null 并加入 txs；失败返回原因（计入失败计数） */
+    private fun parseRow(
+        cols: List<String>,
+        col: Map<String, Int>?,
+        catByKey: Map<String, String>,
+        txs: MutableList<Tx>
+    ): String? {
+        fun cell(key: String): String =
+            (col?.get(key)?.takeIf { it in cols.indices } ?: -1).let { if (it >= 0) cols[it].trim() else "" }
+
+        // 未完成交易（微信「当前状态」/支付宝「交易状态」）
+        val status = cell("status")
+        if (status.contains("关闭") || status.contains("失败")) return "交易未完成"
+
+        val amountRaw = if (col != null) cell("amount")
+        else cols.getOrNull(2)?.trim() ?: ""
+        val amount = amountRaw.replace("[¥￥,\\s]".toRegex(), "").toDoubleOrNull()
+            ?: return "金额无法识别（$amountRaw）"
+        if (kotlin.math.abs(amount) > 1_000_000) return "金额超出范围（$amountRaw）"
+
+        // 收/支：支付宝「不计收支」（转账/余额变动）跳过；认不出时按金额正负判断
+        val typeRaw = if (col != null) cell("type") else cols.getOrNull(1)?.trim() ?: ""
+        if (typeRaw.contains("不计收支") || typeRaw.contains("转账")) return "不计收支/转账"
+        // 负数金额 = 退款/转入 → 记收入，不丢行（不因「金额<=0」整行丢弃）
+        val type = when {
+            amount < 0 -> "income"
+            typeRaw.contains("收入") -> "income"
+            else -> "expense"
+        }
+
+        val timeRaw = if (col != null) cell("time") else cols.getOrNull(6)?.trim() ?: ""
+        val ts = timeParsers.firstNotNullOfOrNull { p ->
+            runCatching {
+                java.time.LocalDateTime.parse(timeRaw, p)
+                    .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+            }.getOrNull()
+        } ?: return "时间无法识别（$timeRaw）"
+
+        val merchantRaw = if (col != null) cell("merchant") else cols.getOrNull(3)?.trim() ?: ""
+        val note = if (col != null) cell("note") else cols.getOrNull(5)?.trim() ?: ""
+        val merchant = merchantRaw.ifBlank { note.ifBlank { "未知商户" } }
+        val catLabel = if (col != null) cell("category") else cols.getOrNull(4)?.trim() ?: ""
+        // 三级瀑布：① 账单自带分类列（支付宝）→ ② 商户名关键词（微信没有分类列）→ ③ 商品名 → 其他
+        val category = catByKey[catLabel]
+            ?: Categories.all.firstOrNull { it.key == catLabel }?.key
+            ?: keywordCategory(catLabel)
+            ?: keywordCategory(merchant)
+            ?: keywordCategory(note)
+            ?: "other"
+        // ID：有订单号列用它（重导入可去重）；没有则用 商户+金额+时间 指纹，
+        // 否则每次导入都是随机 UUID → 重复导入会重复记账
+        val idRaw = if (col != null) cell("id") else cols.getOrNull(0)?.trim() ?: ""
+        val id = idRaw.ifBlank {
+            "fp_" + fingerprint("$merchant|${round2(kotlin.math.abs(amount))}|$ts")
+        }
+        val source = when (if (col != null) cell("source") else cols.getOrNull(7)?.trim() ?: "") {
+            "分享" -> "share"
+            "周期" -> "recurring"
+            else -> "manual"
+        }
+        txs.add(Tx(id, type, round2(kotlin.math.abs(amount)), merchant, category, note, ts, source))
+        return null
+    }
+
+    /** MD5 前 6 字节：无稳定 ID 时的确定性指纹（同商户同额同分钟 → 同 ID，重导入自动去重） */
+    private fun fingerprint(s: String): String =
+        java.security.MessageDigest.getInstance("MD5")
+            .digest(s.toByteArray()).take(6)
+            .joinToString("") { "%02x".format(it) }
+
+    /**
+     * 关键词分类瀑布（2.3 修法）：微信账单没有消费分类列，「交易类型」是支付类别，
+     * 只能靠商户名/商品名兜底。返回 null 表示认不出，交给下一级。
+     */
+    private fun keywordCategory(s: String): String? = when {
+        s.isBlank() -> null
+        listOf(
+            "餐饮", "美食", "外卖", "咖啡", "奶茶", "餐厅", "快餐", "火锅", "茶饮",
+            "星巴克", "瑞幸", "麦当劳", "肯德基", "海底捞", "喜茶", "蜜雪", "沪上阿姨",
+            "华莱士", "老乡鸡", "真功夫", "美团", "饿了么"
+        ).any { s.contains(it) } -> "dining"
+        listOf(
+            "交通", "出行", "骑行", "加油", "地铁", "公交", "打车", "停车",
+            "滴滴", "高德", "中石化", "中石油", "铁路", "12306", "航空"
+        ).any { s.contains(it) } -> "transport"
+        listOf(
+            "购物", "服饰", "数码", "美妆", "百货", "淘宝", "京东", "拼多多", "天猫",
+            "优衣库", "耐克", "阿迪", "小米", "华为", "苹果", "名创", "屈臣氏"
+        ).any { s.contains(it) } -> "shopping"
+        listOf(
+            "日用", "生活缴费", "水电", "话费", "充值", "便利店", "盒马", "永辉",
+            "沃尔玛", "山姆", "全家", "罗森", "电费", "燃气"
+        ).any { s.contains(it) } -> "daily"
+        listOf(
+            "娱乐", "休闲", "文化", "影视", "游戏", "会员", "爱奇艺", "腾讯视频",
+            "网易云", "哔哩哔哩", "B站", "抖音", "优酷"
+        ).any { s.contains(it) } -> "entertainment"
+        listOf("医疗", "健康", "医药", "药房", "医院", "诊所").any { s.contains(it) } -> "health"
+        listOf("学习", "教育", "图书", "书店", "网课", "培训").any { s.contains(it) } -> "education"
+        else -> null
     }
 
     /** RFC4180 风格拆分：引号内可含逗号/换行/转义双引号 */

@@ -9,7 +9,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 /** 预算（月度循环）：scope=total 总预算；scope=category 分类预算 */
@@ -44,7 +43,8 @@ class BudgetStore(context: Context) {
     /** amount <= 0 表示删除该预算 */
     fun set(scope: String, category: String, amount: Double) {
         val budget = Budget(scope, category, amount)
-        runBlocking {
+        // G13：写库走 scope（IO），不再 runBlocking 卡主线程（注意：scope 参数遮蔽了属性，用 this@）
+        this@BudgetStore.scope.launch {
             if (amount <= 0) {
                 dao.softDelete(
                     if (scope == "total") "total" else "cat_$category",

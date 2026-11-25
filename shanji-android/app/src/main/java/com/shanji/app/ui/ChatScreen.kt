@@ -544,9 +544,16 @@ fun ChatScreen(
         if (amount <= 0) { runFollowUp("预算设置失败：金额无效", cid); return }
         val scope = params["scope"]?.toString()?.trim('"') ?: "total"
         val cat = params["category"]?.toString()?.trim('"') ?: ""
-        AppStore.budgets.set(if (scope == "category") "category" else "total", cat, amount)
-        val label = if (scope == "category") "${Categories.of(cat).label}预算" else "总预算"
-        runFollowUp("已设置${label} ¥${fmtAmount(amount)}（月度循环）", cid)
+        if (scope == "category") {
+            // G11：AI 可能传中文/未知分类，非法 key 会存出「其他」预算并撞通知 id → 拒绝并告知
+            val catKey = com.shanji.app.data.normalizeCatKey(cat)
+            if (catKey == null) { runFollowUp("分类「$cat」不认识，预算没有设置", cid); return }
+            AppStore.budgets.set("category", catKey, amount)
+            runFollowUp("已设置${Categories.of(catKey).label}预算 ¥${fmtAmount(amount)}（月度循环）", cid)
+        } else {
+            AppStore.budgets.set("total", "", amount)
+            runFollowUp("已设置总预算 ¥${fmtAmount(amount)}（月度循环）", cid)
+        }
     }
 
     /** subscribe 动作：账单摘要交服务端 AI 判断订阅（F7），AI 不可用降级本地规则，结果回传 AI 出第二轮 */
@@ -616,11 +623,26 @@ fun ChatScreen(
                 if (amount > 0) {
                     val scope = btn.params["scope"]?.toString()?.trim('"') ?: "total"
                     val cat = btn.params["category"]?.toString()?.trim('"') ?: ""
-                    AppStore.budgets.set(if (scope == "category") "category" else "total", cat, amount)
-                    val label = if (scope == "category") "${Categories.of(cat).label}预算" else "总预算"
-                    android.widget.Toast.makeText(
-                        ctx, "已设置${label} ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
-                    ).show()
+                    if (scope == "category") {
+                        // G11：分类 key 合法性校验，非法则忽略并提示
+                        val catKey = com.shanji.app.data.normalizeCatKey(cat)
+                        if (catKey == null) {
+                            android.widget.Toast.makeText(
+                                ctx, "分类「$cat」不认识，预算没设置", android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            AppStore.budgets.set("category", catKey, amount)
+                            android.widget.Toast.makeText(
+                                ctx, "已设置${Categories.of(catKey).label}预算 ¥${fmtAmount(amount)}",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    } else {
+                        AppStore.budgets.set("total", "", amount)
+                        android.widget.Toast.makeText(
+                            ctx, "已设置总预算 ¥${fmtAmount(amount)}", android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
             }
             "addTx" -> {

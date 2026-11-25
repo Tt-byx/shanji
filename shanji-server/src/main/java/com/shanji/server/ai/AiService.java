@@ -445,20 +445,51 @@ public class AiService {
         数字只能来自给定的 [事件]/[统计]，账本里没有的数字不得出现，禁止估算或编造。
         """;
 
-    /** 统计页洞察卡（F22）：允许溯源链接 + 末尾可选 #CARD# 操作卡片；通知类任务仍走上面的纯文本版 */
+    /**
+     * 统计页洞察（F22，方案A）：AI 只输出一个卡片 JSON，正文由 lines 在服务端拼出——
+     * 正文与卡片不再各写一遍，从根上消灭「正文与卡片重复」（提示词约束语义去重已证明无效）。
+     */
     private static final String INSIGHT_CARD_SYSTEM = """
         你是记账 App「闪记」的理财小助手，用户是大学生。
-        根据给定的规则命中事件和统计数据，生成简短人话洞察。
-        要求：一句话一个要点，最多 3 条，每条不超过 45 字，带具体数字，给一条可执行的小建议。禁止标题。
-        数字只能来自给定的 [事件]/[统计]，账本里没有的数字不得出现，禁止估算或编造。
-        引用 [统计] 里的分类金额时，在数字后面紧跟溯源链接（用户点击可查看对应账单明细）：
-        [¥{金额}](shanji-trace:category={分类key}&month={yyyy-MM})
-        month 用 [统计] 里给出的月份，category 用 [统计] 括号里的分类 key（如 dining）；[统计] 里没有的数字不要加链接。
-        最后可单独起一行输出一张操作卡片（没有合适按钮就整行省略，卡片必须放正文末尾）：
-        #CARD#{"title":"{带真实数字的结论}","lines":["{一条补充}"],"buttons":[{"label":"{按钮文字}","fn":"queryTx","params":{"category":"{分类key}","month":"{yyyy-MM}"}}]}
-        buttons 的 fn 只能是 queryTx / budget_set / addTx；params 只用 category/month/keyword/scope/amount；
-        卡片里的数字同样必须来自 [事件]/[统计]，占位符 {xxx} 必须替换成真实值，禁止照抄示例。
+        根据给定的规则命中事件和统计数据生成洞察。只输出一个 JSON 对象，
+        不要 JSON 之外的任何文字、不要解释、不要 markdown 围栏、不要代码块：
+        {"lines":["要点1","要点2"],"title":"下一步行动短结论","buttons":[{"label":"按钮文字","fn":"queryTx","params":{"category":"分类key","month":"yyyy-MM"}}]}
+        要求：
+        - lines：2~3 条正文要点，每条不超过 45 字，带具体数字，给一条可执行的小建议；这就是用户看到的正文
+        - 引用 [统计] 里的分类金额时，在数字后面紧跟溯源链接（用户点击可查看对应账单明细）：
+          [¥{金额}](shanji-trace:category={分类key}&month={yyyy-MM})
+          month 用 [统计] 里给出的月份，category 用 [统计] 括号里的分类 key（如 dining）；[统计] 里没有的数字不要加链接
+        - title：正文没写的下一步动作短结论（20 字以内），禁止把 lines 里的句子换个说法再写一遍
+        - buttons：可选的操作按钮，没有合适的就给空数组 []
+        - 数字只能来自给定的 [事件]/[统计]，账本里没有的数字不得出现，禁止估算或编造
+        - buttons 的 fn 只能是 queryTx / budget_set / addTx；params 只用 category/month/keyword/scope/amount
+        - 占位符 {xxx} 必须替换成真实值，禁止照抄示例
         """;
+
+    /** 方案A：把 AI 的卡片 JSON 组装成「正文 + #CARD#(仅 title/buttons)」协议文本 */
+    private String buildInsightCardReply(String out) {
+        JsonNode card = extractJson(out);
+        if (card == null || !card.path("lines").isArray()) return null;
+        StringBuilder body = new StringBuilder();
+        for (JsonNode l : card.path("lines")) {
+            String line = l.asText("").trim();
+            if (!line.isEmpty()) body.append(line).append('\n');
+        }
+        if (body.isEmpty()) return null;
+        // lines 已经是正文，卡片只留 title + buttons，不再重复渲染一遍
+        JsonNode btns = card.path("buttons");
+        String cardJson = "{\"title\":" + quoteJson(card.path("title").asText(""))
+            + ",\"buttons\":" + (btns.isArray() ? btns.toString() : "[]") + "}";
+        return body.toString().trim() + "\n#CARD#" + cardJson;
+    }
+
+    private String quoteJson(String s) {
+        try {
+            return M.writeValueAsString(s);
+        } catch (Exception e) {
+            return "\"\"";
+        }
+    }
 
     public AiDtos.InsightResult insight(AiDtos.InsightRequest req) {
         boolean statCard = "insight".equals(req.kind());
@@ -488,33 +519,99 @@ public class AiService {
         if (t.startsWith("```")) t = t.replaceAll("^```[a-z]*\\n?|\\n?```$", "").trim();
         t = t.replace("&#10;", "\n").replace("&amp;", "&").trim();
         if (t.isBlank()) throw new BizException(HttpStatus.BAD_GATEWAY, "AI 没回话，稍后再试");
+        // 洞察卡：优先按卡片 JSON 组装；模型没按格式输出时退回纯正文（无卡片）
+        String reply = statCard ? buildInsightCardReply(t) : null;
+        if (reply == null) reply = t;
         // 洞察卡带链接和 #CARD# 行，给足余量；通知类仍是纯短文案
         int limit = statCard ? 1500 : 500;
-        return new AiDtos.InsightResult(t.length() > limit ? t.substring(0, limit) : t);
+        return new AiDtos.InsightResult(reply.length() > limit ? reply.substring(0, limit) : reply);
     }
 
     private static final String SUBSCRIBE_SCAN_SYSTEM = """
         你是记账 App「闪记」的订阅识别器。输入是用户近几个月的账单流水，每行格式：
-        yyyy-MM-dd|商户名|金额|分类key
-        识别「订阅 / 固定支出」：同一商户连续 3 个月以上每月都出现、且金额基本稳定的支出，
-        如视频会员、话费、云盘、健身卡、房租。
+        yyyy-MM-dd|商户名|金额|分类key|账户id
+        识别「订阅 / 固定支出」两类：
+        1) 按月扣的：同一商户连续 3 个月以上每月都出现、且金额基本稳定的支出，如视频会员、话费、云盘、房租；
+        2) 一年一扣的年付：如年费会员、域名、健身年卡、大会员年费（流水里一年只出现一次）。
         只输出一个 JSON 数组，不要解释、不要 markdown 围栏、不要代码块：
-        [{"name":"商户名","amount":月均金额(数字),"category":"分类key","cycle":"monthly","dayOfMonth":15,"dueMonth":0}]
+        [{"name":"商户名","amount":金额(数字),"category":"分类key","cycle":"monthly","dayOfMonth":15,"dueMonth":0}]
         规则：
-        - 不满足「连续每月出现且金额稳定」的不要输出；不确定的宁可不输出；没有就返回 []
-        - cycle 固定填 monthly；dayOfMonth 取最近一笔账单的日期几号（1~31）
+        - 按月扣的填 cycle=monthly；年付的填 cycle=yearly 并给 dueMonth（1~12，该笔年费实际出现的月份）
+        - amount：monthly 填月均金额，yearly 填那笔年费的金额
+        - 流水里没有连续 3 个月出现的商户，不要输出 monthly；不确定的宁可不输出；没有就返回 []
+        - dayOfMonth 取最近一笔账单的日期几号（1~31）
         - category 沿用账单行里的分类 key（dining/transport/shopping/daily/entertainment/health/education/other），不要改
         - [已识别，跳过] 里列出的商户已存在，直接跳过
         - 结果最多 30 条
         """;
 
-    /** 订阅识别（F7）：语义判断交给 AI，客户端在调用失败时才降级本地规则 */
+    /** 摘要里的一笔账单（已按日期升序存入） */
+    private record BillRow(java.time.LocalDate date, double amount, String accountId) {}
+
+    /** 两个商户名是否指向同一商户：精确优先，其次互为包含（≥2 字才允许，防短词误配） */
+    private boolean nameMatches(String a, String b) {
+        String x = a.trim().toLowerCase(), y = b.trim().toLowerCase();
+        if (x.isEmpty() || y.isEmpty()) return false;
+        if (x.equals(y)) return true;
+        return x.length() >= 2 && y.length() >= 2 && (x.contains(y) || y.contains(x));
+    }
+
+    /** 按商户匹配账单行：精确优先，其次互为包含 */
+    private java.util.List<BillRow> matchBills(
+        java.util.Map<String, java.util.List<BillRow>> byMerchant, String name) {
+        String n = name.trim().toLowerCase();
+        if (n.isEmpty()) return java.util.List.of();
+        java.util.List<BillRow> direct = byMerchant.get(n);
+        if (direct != null) return direct;
+        for (var e : byMerchant.entrySet()) {
+            if (nameMatches(e.getKey(), n)) return e.getValue();
+        }
+        return java.util.List.of();
+    }
+
+    /** 账单里商户出现的最长连续月数 */
+    private int bestMonthRun(java.util.List<BillRow> rows) {
+        java.util.TreeSet<java.time.YearMonth> ms = new java.util.TreeSet<>();
+        for (BillRow r : rows) ms.add(java.time.YearMonth.from(r.date()));
+        int best = 0, run = 0;
+        java.time.YearMonth prev = null;
+        for (java.time.YearMonth m : ms) {
+            run = (prev != null && m.equals(prev.plusMonths(1))) ? run + 1 : 1;
+            if (run > best) best = run;
+            prev = m;
+        }
+        return best;
+    }
+
+    /** 订阅识别（F7）：语义判断交给 AI，服务端做连续性/存在性校验，客户端在调用失败时才降级本地规则 */
     public AiDtos.SubscribeScanResult subscribeScan(AiDtos.SubscribeScanRequest req) {
         String summary = req.txSummary() == null ? "" : req.txSummary().trim();
         if (summary.isEmpty()) {
             throw new BizException(HttpStatus.BAD_REQUEST, "没有可分析的账单");
         }
         if (summary.length() > 60_000) summary = summary.substring(0, 60_000);
+
+        // 解析摘要 → 商户(小写) → 账单列表（按日期升序）
+        java.util.Map<String, java.util.List<BillRow>> byMerchant = new java.util.LinkedHashMap<>();
+        for (String line : summary.split("\n")) {
+            String[] p = line.split("\\|", -1);
+            if (p.length < 4) continue;
+            java.time.LocalDate d;
+            double amt;
+            try {
+                d = java.time.LocalDate.parse(p[0].trim());
+                amt = Double.parseDouble(p[2].trim().replace("¥", ""));
+            } catch (Exception ex) {
+                continue;
+            }
+            String m = p[1].trim().toLowerCase();
+            if (m.isEmpty()) continue;
+            String acc = p.length >= 5 ? p[4].trim() : "";
+            byMerchant.computeIfAbsent(m, k -> new java.util.ArrayList<>())
+                .add(new BillRow(d, amt, acc));
+        }
+        byMerchant.values().forEach(list -> list.sort(java.util.Comparator.comparing(BillRow::date)));
+
         StringBuilder sb = new StringBuilder("[账单流水]\n").append(summary).append('\n');
         if (req.existing() != null && !req.existing().isEmpty()) {
             sb.append("[已识别，跳过]\n").append(String.join("、", req.existing())).append('\n');
@@ -530,6 +627,12 @@ public class AiService {
                 String name = n.path("name").asText("").trim();
                 double amount = n.path("amount").asDouble(0);
                 if (name.isEmpty() || name.length() > 30 || amount <= 0 || amount > 1_000_000) continue;
+                // 存在性校验：摘要里找不到该商户 → 模型幻觉，丢弃
+                java.util.List<BillRow> rows = matchBills(byMerchant, name);
+                if (rows.isEmpty()) continue;
+                // 已有订阅直接跳过（不只靠提示词）
+                if (req.existing() != null &&
+                    req.existing().stream().anyMatch(e -> nameMatches(e, name))) continue;
                 String cat = n.path("category").asText("other");
                 if (!cats.contains(cat)) cat = "other";
                 String cycle = n.path("cycle").asText("monthly");
@@ -537,8 +640,20 @@ public class AiService {
                 int day = n.path("dayOfMonth").asInt(1);
                 if (day < 1 || day > 31) day = 1;
                 int dueMonth = n.path("dueMonth").asInt(0);
-                if (dueMonth < 0 || dueMonth > 12) dueMonth = 0;
-                items.add(new AiDtos.SubscribeScanItem(name, amount, cat, cycle, day, dueMonth));
+                if (cycle.equals("yearly")) {
+                    // 年付校验：摘要窗口只有几个月，验不了「连续」；至少要真出现过，
+                    // dueMonth 与实际出现月份对不上时用最近一笔的月份纠正
+                    // （dueMonth 后面还会被改写，lambda 里要用 effectively final 的副本）
+                    final int dm = dueMonth;
+                    boolean monthMatch = rows.stream().anyMatch(r -> r.date().getMonthValue() == dm);
+                    if (!monthMatch) dueMonth = rows.get(rows.size() - 1).date().getMonthValue();
+                } else {
+                    // 连续性校验（G4）：不足连续 3 个月直接丢弃，防到期提醒变噪音
+                    if (bestMonthRun(rows) < 3) continue;
+                    if (dueMonth < 0 || dueMonth > 12) dueMonth = 0;
+                }
+                String accountId = rows.get(rows.size() - 1).accountId();  // 回填账单真实账户（G5）
+                items.add(new AiDtos.SubscribeScanItem(name, amount, cat, cycle, day, dueMonth, accountId));
             }
         }
         return new AiDtos.SubscribeScanResult(items);

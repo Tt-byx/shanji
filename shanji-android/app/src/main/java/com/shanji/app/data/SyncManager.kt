@@ -150,7 +150,7 @@ object SyncManager {
                     txs = dirty,
                     accounts = db.accountDao().listAll(),
                     budgets = db.budgetDao().listAll(),
-                    fixeds = db.recurringDao().listAll()
+                    fixeds = db.recurringDao().listAllWithDeleted()   // 含墓碑：本地删除要能传播到其它设备
                 )
             )
             if (pushResp.code != 0) error(pushResp.message.ifEmpty { "推送失败" })

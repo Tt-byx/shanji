@@ -10,7 +10,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -95,6 +94,8 @@ class RecurringStore(context: Context) {
                         source = s.source, updatedAt = System.currentTimeMillis(), deleted = 0
                     )
                 })
+                // G10：老版把 29~31 号压成了 28 号（数据不可还原），提示用户核对一次
+                prefs.edit().putBoolean("sub_day_check_hint", true).apply()
             }
         }
         prefs.edit().putBoolean("migrated_sub_to_room", true).apply()
@@ -116,11 +117,12 @@ class RecurringStore(context: Context) {
             cycle = cycle, dueMonth = if (cycle == "yearly") dueMonth else 0,
             autoRecord = autoRecord, source = source
         )
-        runBlocking { dao.upsert(rule.toEntity()) }
+        // G13：写库走 scope（IO），不再 runBlocking 卡主线程等 IO（切开关/增删不再掉帧）
+        scope.launch { dao.upsert(rule.toEntity()) }
     }
 
     fun update(rule: Recurring) {
-        runBlocking {
+        scope.launch {
             dao.update(rule.copy(dayOfMonth = rule.dayOfMonth.coerceIn(1, 31)).toEntity())
         }
     }
@@ -128,19 +130,19 @@ class RecurringStore(context: Context) {
     /** 直接入库给定的固定支出（识别结果确认时用，id 由识别方生成） */
     fun addAll(items: List<Recurring>) {
         if (items.isEmpty()) return
-        runBlocking { dao.upsertAll(items.map { it.toEntity() }) }
+        scope.launch { dao.upsertAll(items.map { it.toEntity() }) }
     }
 
     fun setEnabled(rule: Recurring, enabled: Boolean) {
-        runBlocking { dao.update(rule.copy(enabled = enabled).toEntity()) }
+        scope.launch { dao.update(rule.copy(enabled = enabled).toEntity()) }
     }
 
     fun remove(id: String) {
-        runBlocking { dao.softDelete(id, System.currentTimeMillis()) }
+        scope.launch { dao.softDelete(id, System.currentTimeMillis()) }
     }
 
     fun markRun(id: String, date: String) {
-        runBlocking { dao.markRun(id, date, System.currentTimeMillis()) }
+        scope.launch { dao.markRun(id, date, System.currentTimeMillis()) }
     }
 
     /** 直接读库（不依赖 Flow 加载时机），供调度器使用：只有 autoRecord=1 的规则才生成账单 */
